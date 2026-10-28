@@ -1,0 +1,30 @@
+"""The application entry point: ``uvicorn app.main:app``.
+
+Yours: add middleware, startup hooks or routes that are not in the spec here (mark those
+``include_in_schema=False``, or add them to the spec, so the spec stays the API's source of
+truth). APIForge creates this file once and never overwrites it.
+"""
+
+from __future__ import annotations
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import get_settings
+from app.generated.app import build_app
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = build_app()
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    return app
+
+
+app = create_app()

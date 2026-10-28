@@ -1,0 +1,167 @@
+openapi: 3.1.0
+info:
+  title: Edge Cases
+  version: 0.1.0
+  description: |
+    Constructs APIForge cannot express exactly. Each one must appear in the lint report
+    with its location, and the rest of the API must still generate and pass its tests.
+webhooks:
+  itemCreated:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Received
+paths:
+  /search:
+    get:
+      summary: Search with unusual parameter styles
+      parameters:
+        - name: filter
+          in: query
+          style: deepObject
+          explode: true
+          schema:
+            type: object
+            properties:
+              color:
+                type: string
+        - name: ids
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: integer
+        - name: Accept
+          in: header
+          schema:
+            type: string
+        - name: owner
+          in: query
+          description: A look-ahead pattern, which the default regex engine cannot compile
+          schema:
+            type: string
+            pattern: '^(?!admin)[a-z]+$'
+            example: ada
+      responses:
+        '200':
+          description: Results as JSON or XML
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shape'
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/Shape'
+  /shapes:
+    post:
+      operationId: createShape
+      tags: [shapes, drawing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Shape'
+          application/xml:
+            schema:
+              $ref: '#/components/schemas/Shape'
+      callbacks:
+        onRendered:
+          '{$request.body#/callbackUrl}':
+            post:
+              responses:
+                '200':
+                  description: OK
+      responses:
+        '201':
+          description: Created
+          links:
+            GetShape:
+              operationId: createShape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Shape'
+  /blobs:
+    put:
+      operationId: putBlob
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Stored, with a plain text receipt
+          content:
+            text/plain:
+              schema:
+                type: string
+  /legacy:
+    get:
+      operationId: legacyEndpoint
+      deprecated: true
+      responses:
+        '200':
+          description: Still here
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loose'
+components:
+  schemas:
+    Circle:
+      type: object
+      required: [kind, radius]
+      properties:
+        kind:
+          type: string
+        radius:
+          type: number
+          exclusiveMinimum: 0
+    Square:
+      type: object
+      required: [kind, side]
+      properties:
+        kind:
+          type: string
+        side:
+          type: number
+          exclusiveMinimum: 0
+    Shape:
+      anyOf:
+        - $ref: '#/components/schemas/Circle'
+        - $ref: '#/components/schemas/Square'
+    Loose:
+      type: object
+      minProperties: 1
+      properties:
+        label:
+          type: string
+          not:
+            const: forbidden
+        point:
+          type: array
+          prefixItems:
+            - type: number
+            - type: number
+        tags:
+          type: array
+          uniqueItems: true
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+      patternProperties:
+        '^x-':
+          type: string

@@ -1,0 +1,518 @@
+openapi: 3.1.0
+info:
+  title: Bookstore
+  version: 2.3.0
+  description: |
+    An online bookstore: a catalog of printed books, ebooks and audiobooks, customer
+    accounts, orders and file downloads. Exercises polymorphism, files, forms and several
+    kinds of authentication.
+  contact:
+    name: Bookstore API team
+    email: api@bookstore.example.com
+  license:
+    name: MIT
+servers:
+  - url: https://api.bookstore.example.com
+tags:
+  - name: catalog
+    description: Books, categories and covers
+  - name: accounts
+    description: Customers and sign in
+  - name: orders
+    description: Orders and invoices
+security:
+  - apiKey: []
+paths:
+  /books:
+    get:
+      tags: [catalog]
+      operationId: searchBooks
+      summary: Search the catalog
+      security: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 100
+        - name: format
+          in: query
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/BookFormat'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+        - name: session
+          in: cookie
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching books, one page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookPage'
+        4XX:
+          description: The search could not be run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    post:
+      tags: [catalog]
+      operationId: addBook
+      summary: Add a book to the catalog
+      security:
+        - oauth2: [catalog:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Book'
+      responses:
+        '201':
+          description: The book was added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+        default:
+          description: Anything else
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /books/{isbn}:
+    parameters:
+      - name: isbn
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^97[89][0-9]{10}$'
+    get:
+      tags: [catalog]
+      operationId: getBook
+      summary: Get a book
+      security: []
+      responses:
+        '200':
+          description: The book
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+        '404':
+          description: No such book
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /books/{isbn}/cover:
+    parameters:
+      - name: isbn
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^97[89][0-9]{10}$'
+    put:
+      tags: [catalog]
+      operationId: uploadCover
+      summary: Upload a cover image
+      security:
+        - oauth2: [catalog:write]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                caption:
+                  type: string
+                  maxLength: 200
+      responses:
+        '204':
+          description: The cover was stored
+  /categories:
+    get:
+      tags: [catalog]
+      operationId: listCategories
+      summary: The category tree
+      security: []
+      responses:
+        '200':
+          description: Top-level categories with their children
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Category'
+  /accounts:
+    post:
+      tags: [accounts]
+      operationId: createAccount
+      summary: Create a customer account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Account'
+      responses:
+        '201':
+          description: The account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '409':
+          description: The email address is taken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /accounts/me:
+    get:
+      tags: [accounts]
+      operationId: getMyAccount
+      summary: The signed-in customer
+      security:
+        - basicAuth: []
+        - oauth2: [account:read]
+      responses:
+        '200':
+          description: The account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+  /sessions:
+    post:
+      tags: [accounts]
+      operationId: signIn
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: A token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type]
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    const: bearer
+                  expires_in:
+                    type: integer
+  /orders:
+    post:
+      tags: [orders]
+      operationId: placeOrder
+      summary: Place an order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewOrder'
+      responses:
+        '201':
+          description: The order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '422':
+          description: The order is not valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /orders/{orderId}:
+    get:
+      tags: [orders]
+      operationId: getOrder
+      summary: Get an order
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+  /orders/{orderId}/invoice:
+    get:
+      tags: [orders]
+      operationId: downloadInvoice
+      summary: Download the invoice as a PDF
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The invoice
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    basicAuth:
+      type: http
+      scheme: basic
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.bookstore.example.com/token
+          scopes:
+            catalog:write: Add and change books
+            account:read: Read customer accounts
+  schemas:
+    BookFormat:
+      type: string
+      enum: [print, ebook, audio]
+    Rating:
+      type: integer
+      enum: [1, 2, 3, 4, 5]
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: string
+          pattern: '^[0-9]+\.[0-9]{2}$'
+          examples: ['24.99']
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          examples: [EUR]
+    BookBase:
+      type: object
+      required: [isbn, title, format, price]
+      properties:
+        isbn:
+          type: string
+          pattern: '^97[89][0-9]{10}$'
+        title:
+          type: string
+          minLength: 1
+        authors:
+          type: array
+          items:
+            type: string
+        format:
+          type: string
+        price:
+          $ref: '#/components/schemas/Money'
+        rating:
+          oneOf:
+            - $ref: '#/components/schemas/Rating'
+            - type: 'null'
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+    PrintBook:
+      allOf:
+        - $ref: '#/components/schemas/BookBase'
+        - type: object
+          required: [pages]
+          properties:
+            pages:
+              type: integer
+              minimum: 1
+            weightGrams:
+              type: [integer, 'null']
+    Ebook:
+      allOf:
+        - $ref: '#/components/schemas/BookBase'
+        - type: object
+          required: [fileSizeKb]
+          properties:
+            fileSizeKb:
+              type: integer
+              exclusiveMinimum: 0
+            drm:
+              type: boolean
+              default: false
+    Audiobook:
+      allOf:
+        - $ref: '#/components/schemas/BookBase'
+        - type: object
+          required: [durationMinutes]
+          properties:
+            durationMinutes:
+              type: integer
+              minimum: 1
+            narrator:
+              type: string
+    Book:
+      oneOf:
+        - $ref: '#/components/schemas/PrintBook'
+        - $ref: '#/components/schemas/Ebook'
+        - $ref: '#/components/schemas/Audiobook'
+      discriminator:
+        propertyName: format
+        mapping:
+          print: '#/components/schemas/PrintBook'
+          ebook: '#/components/schemas/Ebook'
+          audio: '#/components/schemas/Audiobook'
+    BookPage:
+      type: object
+      required: [items, total, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Book'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+    Category:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/Category'
+    Account:
+      type: object
+      required: [email, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          maxLength: 120
+        password:
+          type: string
+          minLength: 8
+          writeOnly: true
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+    OrderLine:
+      type: object
+      required: [isbn, quantity]
+      properties:
+        isbn:
+          type: string
+          pattern: '^97[89][0-9]{10}$'
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 99
+    NewOrder:
+      type: object
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderLine'
+        note:
+          type: [string, 'null']
+          maxLength: 500
+    Order:
+      allOf:
+        - $ref: '#/components/schemas/NewOrder'
+        - type: object
+          required: [id, status, total]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [received, paid, shipped, cancelled]
+            total:
+              $ref: '#/components/schemas/Money'
+    Problem:
+      type: object
+      required: [title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string

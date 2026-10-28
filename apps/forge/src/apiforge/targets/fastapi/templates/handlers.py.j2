@@ -1,0 +1,33 @@
+"""Handlers for the "{{ tag.wire|doc }}" operations.
+
+Yours: APIForge creates this file once and never overwrites it; when the spec gains an
+operation, a new stub is appended at the end. Each function is called by the generated
+route (app/generated/routers/{{ tag.module }}.py) with validated arguments. Return the
+success response (a model, or None for responses without a body); raise
+ApiError(status, body) for a documented error.
+{% if tag_has_crud %}
+
+Operations on a collection resource already use the database (app/generated/crud.py);
+the others return the example data in app/generated/mock.py until you replace them.
+{% else %}
+
+Until you replace them, the functions return the example data in app/generated/mock.py,
+so the API works as a mock right away.
+{% endif %}
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime, time
+from typing import Any, Literal
+from uuid import UUID
+
+from fastapi import UploadFile
+from pydantic import EmailStr
+
+from app.generated import {{ "crud, " if has_db else "" }}mock, models
+from app.generated.errors import ApiError
+from app.generated.principal import Principal
+{% for v in tag_views %}
+{% include "handler_stub.py.j2" %}
+{% endfor %}

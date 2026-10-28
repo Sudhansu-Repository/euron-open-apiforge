@@ -1,0 +1,65 @@
+"""Settings, read from environment variables (and a .env file in development).
+
+Yours: APIForge creates this file once and never overwrites it. In production
+(APP_ENV=production) the app refuses to start with unsafe settings.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import Field{{ ", SecretStr" if (has_bearer or has_apikey or has_basic) else "" }}, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    app_env: Literal["development", "test", "production"] = "development"
+    cors_origins: list[str] = Field(default_factory=list)
+{% if has_bearer %}
+    # Tokens are JSON Web Tokens signed with this secret (HS256 by default).
+    jwt_secret: SecretStr = SecretStr("")
+    jwt_algorithm: str = "HS256"
+    jwt_audience: str | None = None
+{% endif %}
+{% if has_apikey %}
+    # Accepted API keys, as a JSON list: API_KEYS='["key-one", "key-two"]'.
+    api_keys: list[SecretStr] = Field(default_factory=list)
+{% endif %}
+{% if has_basic %}
+    # HTTP basic users, as a JSON object: BASIC_USERS='{"admin": "a-long-password"}'.
+    basic_users: dict[str, SecretStr] = Field(default_factory=dict)
+{% endif %}
+{% if options.db %}
+    database_url: str = "sqlite+aiosqlite:///./app.db"
+{% endif %}
+
+    @model_validator(mode="after")
+    def _refuse_unsafe_production(self) -> Settings:
+        if self.app_env != "production":
+            return self
+        problems: list[str] = []
+{% if has_bearer %}
+        if len(self.jwt_secret.get_secret_value()) < 32:
+            problems.append("JWT_SECRET must be a random value of at least 32 characters")
+{% endif %}
+{% if has_apikey %}
+        if any(len(k.get_secret_value()) < 24 for k in self.api_keys):
+            problems.append("every API key must be at least 24 characters")
+{% endif %}
+{% if has_basic %}
+        if any(len(p.get_secret_value()) < 16 for p in self.basic_users.values()):
+            problems.append("every basic auth password must be at least 16 characters")
+{% endif %}
+        if "*" in self.cors_origins:
+            problems.append("CORS_ORIGINS must list origins, not '*'")
+        if problems:
+            raise ValueError("Unsafe production settings: " + "; ".join(problems))
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

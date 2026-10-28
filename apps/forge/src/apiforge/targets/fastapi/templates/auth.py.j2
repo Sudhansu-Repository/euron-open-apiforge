@@ -1,0 +1,83 @@
+"""How credentials are checked.
+
+Yours: APIForge creates this file once and never overwrites it. Each function receives the
+credential the generated dependency read from the request (app/generated/security.py) and
+returns a Principal, or None to refuse (the route then answers 401). The defaults are safe
+starting points that read their secrets from settings; replace them with your identity
+provider when you have one.
+"""
+
+from __future__ import annotations
+
+{% if has_apikey or has_basic or not schemes %}
+import hmac
+{% endif %}
+{% if has_bearer %}
+from typing import Any
+
+import jwt
+{% endif %}
+
+{% if schemes %}
+from app.config import get_settings
+from app.generated.principal import Principal
+{% endif %}
+{% if has_bearer %}
+
+
+def _verify_jwt(token: str, scheme: str) -> Principal | None:
+    settings = get_settings()
+    secret = settings.jwt_secret.get_secret_value()
+    if not secret:
+        return None  # fail closed: no secret configured, no token is valid
+    try:
+        claims: dict[str, Any] = jwt.decode(
+            token,
+            secret,
+            algorithms=[settings.jwt_algorithm],
+            audience=settings.jwt_audience,
+            options={"require": ["exp", "sub"]},
+        )
+    except jwt.PyJWTError:
+        return None
+    raw = claims.get("scope") or claims.get("scopes") or []
+    scopes = raw.split() if isinstance(raw, str) else [str(s) for s in raw]
+    return Principal(subject=str(claims["sub"]), scheme=scheme, scopes=scopes, claims=claims)
+{% endif %}
+{% for s in schemes %}
+{% if s.kind in ("bearer", "oauth2", "openid") %}
+
+
+async def verify_{{ s.name }}(token: str) -> Principal | None:
+    """{{ s.wire|doc }}: a JSON Web Token signed with JWT_SECRET."""
+    return _verify_jwt(token, {{ s.wire|lit }})
+{% elif s.kind == "apikey" %}
+
+
+async def verify_{{ s.name }}(key: str) -> Principal | None:
+    """{{ s.wire|doc }}: one of the keys in API_KEYS (compared in constant time)."""
+    for accepted in get_settings().api_keys:
+        if hmac.compare_digest(key.encode(), accepted.get_secret_value().encode()):
+            return Principal(subject="api-key", scheme={{ s.wire|lit }})
+    return None
+{% elif s.kind == "basic" %}
+
+
+async def verify_{{ s.name }}(username: str, password: str) -> Principal | None:
+    """{{ s.wire|doc }}: a user in BASIC_USERS (compared in constant time)."""
+    expected = get_settings().basic_users.get(username)
+    if expected is None:
+        hmac.compare_digest(password.encode(), b"x" * 32)  # same work for unknown users
+        return None
+    if hmac.compare_digest(password.encode(), expected.get_secret_value().encode()):
+        return Principal(subject=username, scheme={{ s.wire|lit }})
+    return None
+{% endif %}
+{% endfor %}
+{% if not schemes %}
+
+
+def constant_time_equals(a: str, b: str) -> bool:
+    """The spec declares no security schemes; this helper is here for your own checks."""
+    return hmac.compare_digest(a.encode(), b.encode())
+{% endif %}

@@ -1,0 +1,18 @@
+
+
+async def {{ v.op.func }}(
+{% for p in v.handler_params %}
+    {{ p }},
+{% endfor %}
+) -> {{ v.handler_return }}:
+    """{{ v.doc }}
+    """
+{% if v.crud_body %}
+{% for line in v.crud_body %}
+    {{ line }}
+{% endfor %}
+{% elif v.result_mode in ("model", "raw") %}
+    return mock.{{ v.op.func }}()
+{% else %}
+    return None
+{% endif %}

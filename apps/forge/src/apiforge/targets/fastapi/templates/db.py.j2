@@ -1,0 +1,32 @@
+"""The database engine and sessions.
+
+Yours: APIForge creates this file once and never overwrites it. DATABASE_URL picks the
+database (SQLite by default, Postgres in Docker Compose). Outside production the tables are
+created at startup; in production, run the migrations: ``uv run alembic upgrade head``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.config import get_settings
+
+engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+
+@asynccontextmanager
+async def session_scope() -> AsyncIterator[AsyncSession]:
+    """A session in a transaction: committed when the block ends, rolled back on error."""
+    async with SessionLocal() as session, session.begin():
+        yield session
+
+
+async def create_tables() -> None:
+    from app.generated.db_models import Base
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

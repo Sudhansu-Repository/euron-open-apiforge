@@ -1,0 +1,25 @@
+.PHONY: install run test lint format typecheck check docker
+
+install: ## Install dependencies into .venv
+	uv sync
+
+run: ## Start the API with reload on http://localhost:8000 (docs at /docs)
+	uv run uvicorn app.main:app --reload
+
+test: ## Run the tests
+	uv run pytest -q
+
+lint: ## Lint and check formatting
+	uv run ruff check .
+	uv run ruff format --check .
+
+format: ## Format the code
+	uv run ruff format .
+
+typecheck: ## Type check
+	uv run mypy app tests
+
+check: lint typecheck test ## Everything CI runs
+
+docker: ## Build and run with Docker Compose
+	docker compose up --build

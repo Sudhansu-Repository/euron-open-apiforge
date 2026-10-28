@@ -1,0 +1,215 @@
+openapi: 3.0.3
+info:
+  title: Secure Notes
+  version: 0.9.0
+  description: |
+    A notes service that accepts every kind of credential OpenAPI describes, to show how
+    APIForge maps security schemes: bearer tokens, OAuth2 with scopes, OpenID Connect, API
+    keys in a header, a query parameter or a cookie, and HTTP basic.
+security:
+  - bearerAuth: []
+tags:
+  - name: notes
+  - name: admin
+  - name: public
+paths:
+  /status:
+    get:
+      tags: [public]
+      operationId: getStatus
+      summary: Service status (no credentials)
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  version:
+                    type: string
+  /notes:
+    get:
+      tags: [notes]
+      operationId: listNotes
+      summary: My notes (bearer token or session cookie)
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - name: archived
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Notes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Note'
+    post:
+      tags: [notes]
+      operationId: createNote
+      summary: Write a note (OAuth2 scope notes:write)
+      security:
+        - oauth2: [notes:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewNote'
+      responses:
+        '201':
+          description: The note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+  /notes/{noteId}:
+    parameters:
+      - name: noteId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+    get:
+      tags: [notes]
+      operationId: getNote
+      summary: Read a note (any credential)
+      security:
+        - bearerAuth: []
+        - apiKeyQuery: []
+        - openId: [openid]
+      responses:
+        '200':
+          description: The note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+        '404':
+          description: No such note
+    delete:
+      tags: [notes]
+      operationId: deleteNote
+      summary: Delete a note (OAuth2 scopes notes:write and notes:delete)
+      security:
+        - oauth2: [notes:write, notes:delete]
+      responses:
+        '204':
+          description: Deleted
+  /shared/{token}:
+    get:
+      tags: [public]
+      operationId: readSharedNote
+      summary: A note shared by link (authentication optional)
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 16
+      responses:
+        '200':
+          description: The note
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Note'
+  /admin/stats:
+    get:
+      tags: [admin]
+      operationId: adminStats
+      summary: Usage statistics (HTTP basic or an admin API key)
+      security:
+        - basicAuth: []
+        - adminKey: []
+      responses:
+        '200':
+          description: Counters
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notes, users]
+                properties:
+                  notes:
+                    type: integer
+                  users:
+                    type: integer
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: notes_session
+    apiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+    adminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+    basicAuth:
+      type: http
+      scheme: basic
+    oauth2:
+      type: oauth2
+      flows:
+        password:
+          tokenUrl: https://notes.example.com/oauth/token
+          scopes:
+            notes:write: Write notes
+            notes:delete: Delete notes
+    openId:
+      type: openIdConnect
+      openIdConnectUrl: https://notes.example.com/.well-known/openid-configuration
+  schemas:
+    NewNote:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 140
+        body:
+          type: string
+          maxLength: 10000
+        tags:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+    Note:
+      allOf:
+        - $ref: '#/components/schemas/NewNote'
+        - type: object
+          required: [id, createdAt]
+          properties:
+            id:
+              type: integer
+            createdAt:
+              type: string
+              format: date-time
+            archived:
+              type: boolean
