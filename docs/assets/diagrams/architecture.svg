@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="t d">
+  <title id="t">APIForge architecture</title>
+  <desc id="d">The apiforge CLI and the web app both use the same generator library. The web app talks to the API, which lints and stores uploaded specs in object storage and queues generations in Postgres. A worker claims generations with FOR UPDATE SKIP LOCKED and a lease, runs the generator, and stores a deterministic zip under archives/. Redis is optional and holds rate limits, the lint cache and a config version stamp. CI downloads archives with read-only API keys. Nothing makes outbound calls and generated code is never executed.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#5f9a85"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="600" rx="16" fill="#08140f"/>
+
+  <g font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+    <g font-size="12" font-weight="600" fill="#5f9a85" letter-spacing="1.2">
+      <text x="40" y="44">CLIENTS</text>
+      <text x="430" y="44">APIFORGE SERVICE</text>
+      <text x="900" y="44">DATA</text>
+    </g>
+
+    <!-- Clients -->
+    <g>
+      <rect x="40" y="64" width="300" height="140" rx="14" fill="#10251d"/>
+      <text x="60" y="94" fill="#ecfdf5" font-size="17" font-weight="600">apiforge CLI (offline)</text>
+      <text x="60" y="118" fill="#a7d7c5" font-size="13">lint, generate, diff, verify, examples</text>
+      <rect x="60" y="134" width="260" height="50" rx="8" fill="#163328"/>
+      <text x="74" y="156" fill="#d1fae5" font-size="13">generator library (apps/forge)</text>
+      <text x="74" y="174" fill="#7fb5a2" font-size="12">the same bytes as the service</text>
+    </g>
+    <g>
+      <rect x="40" y="226" width="300" height="110" rx="14" fill="#10251d"/>
+      <text x="60" y="256" fill="#ecfdf5" font-size="17" font-weight="600">Web app (Next.js)</text>
+      <text x="60" y="280" fill="#a7d7c5" font-size="13">projects, spec versions, lint report,</text>
+      <text x="60" y="300" fill="#a7d7c5" font-size="13">generations, file browser, playground</text>
+      <text x="60" y="322" fill="#5f9a85" font-size="12">session cookie + CSRF header</text>
+    </g>
+    <g>
+      <rect x="40" y="358" width="300" height="96" rx="14" fill="#10251d"/>
+      <text x="60" y="388" fill="#ecfdf5" font-size="17" font-weight="600">CI and scripts</text>
+      <text x="60" y="412" fill="#a7d7c5" font-size="13">read-only afk_ API keys</text>
+      <text x="60" y="434" fill="#a7d7c5" font-size="13">download archive, check sha256</text>
+    </g>
+
+    <!-- Service -->
+    <g>
+      <rect x="430" y="64" width="380" height="190" rx="14" fill="#10251d"/>
+      <text x="450" y="94" fill="#ecfdf5" font-size="17" font-weight="600">API (FastAPI, stateless)</text>
+      <g font-size="13" fill="#d1fae5">
+        <rect x="450" y="110" width="340" height="34" rx="8" fill="#163328"/>
+        <text x="464" y="132">upload: bounded, lint, store, diff by fingerprint</text>
+        <rect x="450" y="152" width="340" height="34" rx="8" fill="#163328"/>
+        <text x="464" y="174">queue a generation (report gate), 202</text>
+        <rect x="450" y="194" width="340" height="34" rx="8" fill="#163328"/>
+        <text x="464" y="216">archive and files: ETag, 304 without storage</text>
+      </g>
+      <text x="450" y="244" fill="#5f9a85" font-size="12">roles owner, admin, viewer; append-only audit log</text>
+    </g>
+    <g>
+      <rect x="430" y="280" width="380" height="174" rx="14" fill="#10251d"/>
+      <text x="450" y="310" fill="#ecfdf5" font-size="17" font-weight="600">Worker (N replicas)</text>
+      <g font-size="13" fill="#d1fae5">
+        <rect x="450" y="326" width="340" height="34" rx="8" fill="#163328"/>
+        <text x="464" y="348">claim: FOR UPDATE SKIP LOCKED + lease</text>
+        <rect x="450" y="368" width="340" height="34" rx="8" fill="#163328"/>
+        <text x="464" y="390">generate in a thread, deterministic zip</text>
+      </g>
+      <text x="450" y="426" fill="#5f9a85" font-size="12">lost lease: claimed again, up to max attempts</text>
+      <text x="450" y="444" fill="#5f9a85" font-size="12">never runs the generated code</text>
+    </g>
+
+    <!-- Data -->
+    <g>
+      <rect x="900" y="64" width="260" height="130" rx="14" fill="#10251d"/>
+      <text x="920" y="94" fill="#ecfdf5" font-size="17" font-weight="600">PostgreSQL</text>
+      <text x="920" y="118" fill="#a7d7c5" font-size="13">projects, spec versions,</text>
+      <text x="920" y="138" fill="#a7d7c5" font-size="13">generations (the queue),</text>
+      <text x="920" y="158" fill="#a7d7c5" font-size="13">users, keys, audit</text>
+    </g>
+    <g>
+      <rect x="900" y="216" width="260" height="120" rx="14" fill="#10251d"/>
+      <text x="920" y="246" fill="#ecfdf5" font-size="17" font-weight="600">Object storage</text>
+      <text x="920" y="270" fill="#a7d7c5" font-size="13">S3 (Floci locally) or disk</text>
+      <text x="920" y="292" fill="#d1fae5" font-size="13" font-family="JetBrains Mono, SFMono-Regular, Menlo, monospace">specs/  archives/</text>
+      <text x="920" y="316" fill="#5f9a85" font-size="12">rows keep only the key</text>
+    </g>
+    <g>
+      <rect x="900" y="358" width="260" height="96" rx="14" fill="#10251d"/>
+      <text x="920" y="388" fill="#ecfdf5" font-size="17" font-weight="600">Redis (optional)</text>
+      <text x="920" y="412" fill="#a7d7c5" font-size="13">rate limits, lint cache by sha256,</text>
+      <text x="920" y="432" fill="#a7d7c5" font-size="13">config version stamp</text>
+    </g>
+
+    <!-- Arrows -->
+    <g stroke="#5f9a85" stroke-width="1.6" fill="none">
+      <path d="M810 160 H856"/>
+      <path d="M810 367 H856"/>
+      <path d="M856 129 V406"/>
+    </g>
+    <g stroke="#5f9a85" stroke-width="1.6" fill="none" marker-end="url(#arrow)">
+      <path d="M340 281 H428"/>
+      <path d="M340 406 C390 406 390 230 428 230"/>
+      <path d="M856 129 H898"/>
+      <path d="M856 276 H898"/>
+      <path d="M856 406 H898"/>
+      <path d="M620 254 V278"/>
+    </g>
+    <text x="628" y="270" fill="#5f9a85" font-size="11">queue in Postgres</text>
+
+    <text x="40" y="510" fill="#a7d7c5" font-size="14">No outbound calls: URL $refs are refused, never fetched. Uploads are bounded by size, YAML alias budget, zip declared sizes and depth.</text>
+    <text x="40" y="536" fill="#a7d7c5" font-size="14">The CLI and the worker run the same generator, so a web archive is byte for byte what `apiforge generate --zip` writes.</text>
+    <text x="40" y="570" fill="#5f9a85" font-size="12">AWS: ECS Fargate (api, worker, web) behind an ALB with WAF, RDS PostgreSQL, ElastiCache, S3 with KMS, Secrets Manager, CloudWatch alarms.</text>
+  </g>
+</svg>

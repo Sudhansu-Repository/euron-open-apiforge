@@ -1,0 +1,75 @@
+# Example GitHub Actions workflow for a repository that keeps an OpenAPI spec and the
+# FastAPI project APIForge generated from it. Copy it to .github/workflows/ in that
+# repository and set SPEC and PROJECT below.
+#
+#   1. `apiforge lint` fails the job when the spec has errors (exit code 1); warnings and
+#      notes are printed but do not fail it.
+#   2. `apiforge diff` fails the job when the committed project is not what generating
+#      from the committed spec would produce: a spec change without a regeneration, or a
+#      hand edit inside app/generated/ or tests/generated/. The generation options are
+#      read from the project's apiforge.lock, so the check uses the same --db, --no-docker
+#      and --no-ci flags the project was generated with.
+#   3. The project's own gates (ruff, mypy --strict, pytest, including the round trip of
+#      the served OpenAPI against the spec) run in the project's generated CI workflow;
+#      `apiforge verify` here would run the same checks again.
+name: apiforge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  SPEC: openapi.yaml        # the spec: a file, a folder with openapi.yaml at its top, or a zip
+  PROJECT: service          # the folder APIForge generated into
+  APIFORGE_VERSION: "0.1.0" # pin the generator: a new version may change generated files
+
+jobs:
+  spec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install apiforge
+        run: uv tool install "euron-apiforge==${APIFORGE_VERSION}"
+
+      - name: Lint the spec (fails on errors)
+        run: apiforge lint "$SPEC"
+
+      - name: The generated project is up to date with the spec
+        run: |
+          flags=$(python3 - "$PROJECT/apiforge.lock" <<'PY'
+          import json, shlex, sys
+          options = json.load(open(sys.argv[1]))["options"]
+          flags = []
+          if options.get("db"):
+              flags.append("--db")
+          if not options.get("docker", True):
+              flags.append("--no-docker")
+          if not options.get("ci", True):
+              flags.append("--no-ci")
+          if options.get("project_name"):
+              flags += ["--name", options["project_name"]]
+          print(shlex.join(flags))
+          PY
+          )
+          eval "set -- $flags"
+          apiforge diff --spec "$SPEC" --output "$PROJECT" "$@" --json > diff.json || true
+          python3 - diff.json <<'PY'
+          import json, sys
+          diff = json.load(open(sys.argv[1]))
+          stale = {k: diff[k] for k in ("created", "updated", "deleted", "appended", "conflicts") if diff[k]}
+          if not stale:
+              print("The generated project matches the spec.")
+              sys.exit(0)
+          for key, value in stale.items():
+              print(f"::error::{key}: {value}")
+          print("Regenerate locally: apiforge generate --spec <spec> --output <project> (same flags), "
+                "then commit. Edits inside app/generated/ belong in app/handlers/ or in the spec.")
+          sys.exit(1)
+          PY
