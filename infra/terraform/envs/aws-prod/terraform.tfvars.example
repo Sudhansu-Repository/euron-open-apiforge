@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars (git-ignored) and replace every placeholder.
+region      = "us-east-1"
+name_prefix = "acme-apiforge-prod" # the artifacts bucket name derives from this: make it globally unique
+
+hostname        = "apiforge.example.com"
+certificate_arn = "<ACM_CERTIFICATE_ARN>"     # same region, covering hostname
+route53_zone_id = "<ROUTE53_HOSTED_ZONE_ID>" # or remove and CNAME hostname to load_balancer_dns_name
+
+# The image tag pushed to the ecr_repositories output (git commit or release).
+image_tag = "0.1.0"
+
+# alarm_email           = "oncall@example.com"
+# metrics_allowed_cidrs = ["203.0.113.10/32"] # your Prometheus egress address (it also needs METRICS_TOKEN)
+
+# Generated archives can be generated again from their spec; keep them this many days.
+# archive_expiration_days = 90
+
+# Extra non-secret API settings (see docs/guides/configuration.md).
+# api_extra_environment = {
+#   DEFAULT_RPM_LIMIT    = "120"
+#   GENERATION_TIMEOUT_S = "300"
+# }

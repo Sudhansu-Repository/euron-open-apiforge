@@ -1,0 +1,18 @@
+# Build context: the repository root (BuildKit reads <Dockerfile>.dockerignore next to
+# the Dockerfile). Only the generator (apps/forge) and the service (apps/api) are sent.
+*
+!apps/api
+!apps/forge
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/htmlcov
+**/.data
+**/.env
+**/.env.*
+apps/api/tests
+apps/forge/tests
