@@ -50,7 +50,7 @@ jobs:
         working-directory: apps/${{ matrix.app }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.2
       - run: uv export --frozen --no-dev --format requirements-txt > requirements.txt
       - run: uvx pip-audit --strict -r requirements.txt
 

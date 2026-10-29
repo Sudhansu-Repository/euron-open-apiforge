@@ -18,7 +18,7 @@ jobs:
       COMPOSE: docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yaml -f deploy/compose/compose.floci.yaml
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.2
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
