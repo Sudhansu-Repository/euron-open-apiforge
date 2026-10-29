@@ -100,11 +100,12 @@ locals {
     COOKIE_SECURE    = "true"
     # Trust X-Forwarded-For only from inside the VPC (the load balancer).
     FORWARDED_ALLOW_IPS = module.network.vpc_cidr_block
-    # One uvicorn process per task (exact /metrics); scale with tasks. Pool sized so
-    # (api_max_count + worker + migrate) x (pool + overflow) stays under db_max_connections.
+    # One uvicorn process per task (exact /metrics); scale with tasks. Pool sized for the
+    # worst moment, a deploy at full scale (deployment_maximum_percent 200 doubles every
+    # service): (2 x 8 api + 2 x 4 worker + 1 migrate) x (5 + 10) = 375 < db_max_connections.
     WEB_CONCURRENCY = "1"
-    DB_POOL_SIZE    = "10"
-    DB_MAX_OVERFLOW = "20"
+    DB_POOL_SIZE    = "5"
+    DB_MAX_OVERFLOW = "10"
   }, var.api_extra_environment)
 }
 
@@ -118,8 +119,9 @@ module "service" {
   certificate_arn    = var.certificate_arn
   route53_zone_id    = var.route53_zone_id
 
-  api_image = "${module.ecr.repository_urls["api"]}:${var.image_tag}"
-  web_image = "${module.ecr.repository_urls["web"]}:${var.image_tag}"
+  api_image     = "${module.ecr.repository_urls["api"]}:${var.image_tag}"
+  web_image     = "${module.ecr.repository_urls["web"]}:${var.image_tag}"
+  migrate_image = "${module.ecr.repository_urls["api"]}:${coalesce(var.migrate_image_tag, var.image_tag)}"
 
   environment     = local.api_environment
   web_environment = { API_INTERNAL_URL = local.url }
@@ -133,13 +135,14 @@ module "service" {
   log_group_names         = module.observability.log_group_names
   logs_kms_key_arn        = module.kms.key_arn
 
-  api_cpu       = 1024
-  api_memory    = 2048
-  api_min_count = 2
-  api_max_count = 8
-  web_min_count = 2
-  web_max_count = 4
-  worker_count  = 1
+  api_cpu          = 1024
+  api_memory       = 2048
+  api_min_count    = 2
+  api_max_count    = 8
+  web_min_count    = 2
+  web_max_count    = 4
+  worker_count     = 1
+  worker_max_count = 4
 
   deletion_protection    = true
   enable_waf             = true
@@ -165,4 +168,13 @@ module "observability" {
   cache_replication_group_id = module.cache.replication_group_id
   cache_node_count           = 2
   api_p95_latency_seconds    = var.api_p95_latency_seconds
+}
+
+# Alarms with no subscriber reach nobody. A warning, not an error: an operator may
+# subscribe a chat or paging integration to the topic instead.
+check "alarm_delivery" {
+  assert {
+    condition     = var.alarm_email != null
+    error_message = "alarm_email is not set: subscribe an address (or another endpoint) to the alarm topic, or alarms reach nobody."
+  }
 }

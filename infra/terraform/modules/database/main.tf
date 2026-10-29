@@ -30,6 +30,16 @@ resource "aws_db_parameter_group" "this" {
     name  = "log_min_duration_statement"
     value = "1000"
   }
+  # Slow-statement and error log lines would otherwise carry every bind value (password
+  # and key hashes) into CloudWatch, past the app's own hide_parameters.
+  parameter {
+    name  = "log_parameter_max_length"
+    value = "0"
+  }
+  parameter {
+    name  = "log_parameter_max_length_on_error"
+    value = "0"
+  }
   # A transaction left open by a crashed task must not hold row locks (a claimed
   # generation job) for long.
   parameter {

@@ -41,6 +41,12 @@ variable "image_tag" {
   type        = string
 }
 
+variable "migrate_image_tag" {
+  description = "Image tag for the one-off migrate task when it must run ahead of the services (scripts/aws-deploy.sh migrates the new release before rolling the services onto it). Defaults to image_tag."
+  type        = string
+  default     = null
+}
+
 variable "alarm_email" {
   description = "Alarm notification address."
   type        = string

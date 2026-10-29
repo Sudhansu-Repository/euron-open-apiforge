@@ -47,3 +47,8 @@ output "dashboard_name" {
   description = "CloudWatch dashboard."
   value       = module.observability.dashboard_name
 }
+
+output "image_tag" {
+  description = "The image tag the services run (aws-deploy.sh holds them on it while the next release migrates)."
+  value       = var.image_tag
+}

@@ -63,7 +63,7 @@ locals {
       cpu            = var.worker_cpu
       memory         = var.worker_memory
       min_count      = var.worker_count
-      max_count      = var.worker_count
+      max_count      = coalesce(var.worker_max_count, var.worker_count)
       health         = null
       writable_paths = ["/tmp"]
     }
@@ -84,7 +84,7 @@ locals {
       writable_paths = ["/tmp", "/app/.next/cache"]
     }
     migrate = {
-      image          = var.api_image
+      image          = coalesce(var.migrate_image, var.api_image)
       command        = ["migrate"]
       service        = false
       load_balanced  = false
@@ -118,7 +118,7 @@ locals {
   # /metrics is handled by its own rules below; everything else is the dashboard.
   api_paths = {
     100 = ["/api/*", "/healthz", "/readyz"]
-    101 = ["/docs", "/docs/*", "/openapi.json"]
+    101 = ["/docs", "/docs/*", "/openapi.json", "/health"]
   }
 }
 

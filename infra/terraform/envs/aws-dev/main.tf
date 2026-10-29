@@ -99,10 +99,11 @@ locals {
     # Trust X-Forwarded-For only from inside the VPC (the load balancer).
     FORWARDED_ALLOW_IPS = module.network.vpc_cidr_block
     # One uvicorn process per task (exact /metrics); scale with tasks. Pool sized so
-    # (api_max_count + worker + migrate) x (pool + overflow) stays under db_max_connections.
+    # (api_max_count + worker + migrate) x (pool + overflow) stays under db_max_connections,
+    # even mid-deploy when every service runs twice: (2 x 2 + 2 x 1 + 1) x 10 = 70 < 100.
     WEB_CONCURRENCY = "1"
     DB_POOL_SIZE    = "5"
-    DB_MAX_OVERFLOW = "10"
+    DB_MAX_OVERFLOW = "5"
   }, var.api_extra_environment)
 }
 
@@ -116,8 +117,9 @@ module "service" {
   certificate_arn    = var.certificate_arn
   route53_zone_id    = var.route53_zone_id
 
-  api_image = "${module.ecr.repository_urls["api"]}:${var.image_tag}"
-  web_image = "${module.ecr.repository_urls["web"]}:${var.image_tag}"
+  api_image     = "${module.ecr.repository_urls["api"]}:${var.image_tag}"
+  web_image     = "${module.ecr.repository_urls["web"]}:${var.image_tag}"
+  migrate_image = "${module.ecr.repository_urls["api"]}:${coalesce(var.migrate_image_tag, var.image_tag)}"
 
   environment     = local.api_environment
   web_environment = { API_INTERNAL_URL = local.url }

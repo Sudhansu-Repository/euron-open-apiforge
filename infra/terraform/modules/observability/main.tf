@@ -265,6 +265,26 @@ resource "aws_cloudwatch_metric_alarm" "generation_failures" {
   ok_actions          = [aws_sns_topic.alarms.arn]
 }
 
+# A service with no running task reports no CPU samples at all, which every threshold
+# alarm above treats as fine. Here missing data is the alarm: a crash-looping worker or a
+# lost zone would otherwise leave generations queued in silence.
+resource "aws_cloudwatch_metric_alarm" "not_running" {
+  for_each            = var.ecs_services
+  alarm_name          = "${var.name_prefix}-${each.key}-not-running"
+  alarm_description   = "${each.key}: no running task for 5 minutes (crash loop, failed deploy or capacity); check the service events"
+  namespace           = "AWS/ECS"
+  metric_name         = "CPUUtilization"
+  statistic           = "SampleCount"
+  dimensions          = { ClusterName = var.ecs_cluster_name, ServiceName = each.value }
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
 # ─── Dashboard ───────────────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_dashboard" "this" {

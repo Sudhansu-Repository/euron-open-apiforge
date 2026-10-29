@@ -43,6 +43,12 @@ variable "api_image" {
   type        = string
 }
 
+variable "migrate_image" {
+  description = "Image for the one-off migrate task; defaults to api_image. Lets a deploy migrate the new release while the services still run the previous one."
+  type        = string
+  default     = null
+}
+
 variable "web_image" {
   description = "Full web image reference, e.g. <registry>/apiforge-prod/web:<tag>."
   type        = string
@@ -168,9 +174,15 @@ variable "worker_memory" {
 }
 
 variable "worker_count" {
-  description = "Worker task count. Not autoscaled; deploys replace tasks rather than double them."
+  description = "Minimum worker task count."
   type        = number
   default     = 1
+}
+
+variable "worker_max_count" {
+  description = "Maximum worker task count; above worker_count the workers scale on CPU (generation is CPU bound). Null: a fixed worker_count. Scaling in stops a worker with SIGTERM, which finishes the generations in hand."
+  type        = number
+  default     = null
 }
 
 variable "web_cpu" {
