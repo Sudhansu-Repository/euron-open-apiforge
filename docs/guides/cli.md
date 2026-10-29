@@ -179,6 +179,7 @@ Lists the bundled example specs, or copies them into `FOLDER`:
 | `bookstore.yaml` | OpenAPI 3.1, discriminated unions, file upload, forms, OAuth2 scopes |
 | `inventory.yaml` | CRUD with `--db`, UUID ids, `PATCH`, paging and filters |
 | `secure-notes.yaml` | Every security scheme, optional auth, scopes, an API key in a cookie |
+| `team-tasks.yaml` | Team Tasks, 8 operations: a requirement needing two credentials at once (AND), alternatives with and without scopes, an HTTP digest scheme APIForge cannot check (a reported error, so it needs `--accept-report`; the route then answers 401), server-managed `readOnly` fields a PUT keeps, paging without defaults, integer enums in the query string and an operation documented only by `default` |
 | `edge-cases.yaml` | The lint report: `deepObject`, callbacks, webhooks, XML alternatives; a look-ahead pattern on a query parameter |
 
 ## Exit codes

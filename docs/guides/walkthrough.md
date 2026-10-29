@@ -82,7 +82,17 @@ bottom once: it is the table of contents of a generated project.
 contain almost no logic, because `plan.py` already did it. `format_python` runs the pinned
 ruff binary over every Python file: it sorts imports everywhere, removes unused imports
 only under `app/generated/` and `tests/generated/` (handler modules keep their convenience
-imports), and formats; a syntax error stops generation with ruff's output. Tests: `tests/test_hostile.py` proves spec text cannot escape.
+imports), and formats, each ruff call bounded at 120 s (`_run_ruff`); a syntax error stops
+generation with ruff's output. Tests: `tests/test_hostile.py` proves spec text cannot
+escape.
+
+Three templates carry the generated app's runtime behaviour, worth reading together:
+`security.py.j2` (`require()` with AND inside a requirement and OR across them, the
+401 or 403 decision and its challenge, `unsupported()` for schemes APIForge cannot check),
+`middleware.py.j2` (security headers, the body limit) and `app.py.j2` (the JSON error
+handlers, the docs switch in production). `mock.py.j2` answers 501 in production.
+`tests/test_hardening.py` checks them in the source and, in its corpus test, in a running
+team-tasks app.
 
 ### 8. Mocks: `apiforge/examples.py`
 
@@ -133,6 +143,8 @@ setting goes here and in [configuration.md](configuration.md).
 `current_actor` resolves a session (bearer or cookie, with the CSRF header rule) or an
 `afk_` API key (`keys/dependencies.py::authenticate_key`, through the config cache).
 `require_role` gives the `Viewer`, `Admin` and `Owner` dependencies every route uses.
+Sign-in itself is `auth/service.py::authenticate`: the lockout per account and client
+address (`login_failures`) and the account-wide one at 50 failures.
 
 ### 15. Uploading a spec: `projects/router.py` to `projects/service.py` to `projects/analysis.py`
 

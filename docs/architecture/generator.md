@@ -20,7 +20,7 @@ bytes ─▶ load ─▶ validate ─▶ normalize ─▶ (detect CRUD) ─▶ p
 | detect CRUD | `crud.py` | With `--db`: which operations form collection resources |
 | plan | `targets/fastapi/plan.py` | Every signature, decorator and import list, computed in Python |
 | render | `render.py` + `targets/fastapi/templates` | A sandboxed, strict Jinja environment; spec text reaches the code only through the `lit`, `doc` and `comment` filters |
-| format | `render.format_python` | The pinned ruff binary sorts imports and formats, with a fixed configuration |
+| format | `render.format_python` | The pinned ruff binary sorts imports, removes unused imports in `app/generated/` and `tests/generated/` only (handler modules keep their convenience imports) and formats, with a fixed configuration; each ruff call times out after 120 s, and a failure reports ruff's output |
 | write / archive | `writer.py`, `archive.py` | The generation gap on disk, or a byte-identical zip |
 
 ## The intermediate representation
@@ -55,7 +55,9 @@ uses Python's regular expression engine, so patterns with lookarounds work.
 from the type, format, enum and constraints. A value for a `pattern` is built by walking the
 regular expression (`sample_pattern`); patterns it cannot sample (lookarounds,
 backreferences) fall back to a literal and are covered by the spec's examples when present.
-The same input always gives the same value.
+The same input always gives the same value. With `APP_ENV=production`, an operation whose
+handler still returns its example answers 501 `{"detail": "Not implemented"}` instead, and
+logs a warning the first time it is called, so a mock never reaches users by accident.
 
 ## Determinism
 

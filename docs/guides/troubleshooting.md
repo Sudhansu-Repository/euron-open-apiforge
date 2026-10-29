@@ -9,6 +9,7 @@ error has a `code` (`{"error": {"code", "message", "details"}}`); search this pa
 - [apiforge verify fails](#apiforge-verify-fails)
 - [test_spec.py fails in a generated project](#test_specpy-fails-in-a-generated-project)
 - [Every request to a secured route gets 401](#every-request-to-a-secured-route-gets-401)
+- [501 Not implemented, or /docs is 404, in production](#501-not-implemented-or-docs-is-404-in-production)
 - [The app refuses to start: Unsafe production settings](#the-app-refuses-to-start-unsafe-production-settings)
 - [A spec is refused on upload (422)](#a-spec-is-refused-on-upload-422)
 - [spec_too_large or payload_too_large](#spec_too_large-or-payload_too_large)
@@ -67,6 +68,7 @@ spec, then regenerate; or pass `--force` to overwrite the edited files.
 | ---- | ------------- | --- |
 | (before any step) `apiforge: apiforge verify needs uv ...`, exit 1 | uv is not installed | Install [uv](https://docs.astral.sh/uv/) |
 | install | No access to the package index | Run with network access once, or a warm uv cache |
+| install (`uv sync --locked` in Docker or CI) | `uv.lock` is out of date with `pyproject.toml` | Run `uv sync` locally and commit the updated `uv.lock` |
 | lint, format | You edited a handler | `uv run ruff check --fix . && uv run ruff format .` |
 | types | A handler's signature no longer matches the router after a spec change | Update the handler to the new parameters and return type |
 | tests | A handler returns data that does not match the response schema, or `test_spec.py` found a difference | See the next section for `test_spec.py`; otherwise fix the handler |
@@ -88,19 +90,37 @@ difference.
 In the generated project, `app/auth.py` fails closed:
 
 - Bearer, OAuth2, OpenID Connect: `JWT_SECRET` is empty, the token is signed with another
-  secret or algorithm, it lacks `sub` or `exp`, it is expired, or `JWT_AUDIENCE` is set and
-  the token's `aud` differs.
+  secret or algorithm, it lacks `sub` or `exp`, it is expired (beyond
+  `JWT_LEEWAY_SECONDS`), `JWT_AUDIENCE` is set and the token's `aud` differs, or
+  `JWT_ISSUER` is set and its `iss` is missing or differs. Tokens are checked with the
+  secret only; keys from a JWKS endpoint are not fetched.
 - API key: the key is not in `API_KEYS` (a JSON list: `API_KEYS='["key-one"]'`), or it
   is sent in the wrong place (header, query or cookie, as the spec says).
-- Basic: the user is not in `BASIC_USERS` (a JSON object).
+- Basic: the user is not in `BASIC_USERS` (a JSON object), or the `Authorization` header
+  is malformed (it counts as no credential).
+- The requirement needs several schemes at once (an AND requirement such as
+  `{apiKey: [], bearer: []}`): every one of them must be sent.
+- The route's only scheme is one APIForge cannot check (HTTP digest, mutual TLS): it
+  depends on `security.unsupported`, which always answers 401. Check the credential
+  yourself and set `app.dependency_overrides[security.unsupported] = your_check` in
+  `app/main.py`.
 
-A 403 means the token was accepted but lacks a scope the operation requires.
+A 403 means an alternative authenticated but lacked a scope the operation requires, and no
+other alternative succeeded.
+
+## 501 Not implemented, or /docs is 404, in production
+
+With `APP_ENV=production`, an operation whose handler still returns the mock answers 501
+`{"detail": "Not implemented"}` (and logs a warning the first time it is called): write
+the handler. `/docs`, `/redoc` and `/openapi.json` are off in production; set
+`DOCS_ENABLED=true` to turn them on.
 
 ## The app refuses to start: Unsafe production settings
 
 The generated project's `app/config.py` refuses `APP_ENV=production` with a `JWT_SECRET`
-under 32 characters, an API key under 24, a basic password under 16, or `*` in
-`CORS_ORIGINS`. Set real values (`openssl rand -hex 32`), or use `APP_ENV=development`
+under 32 characters, a `JWT_ALGORITHM` other than HS256, HS384 or HS512, an API key under
+24, a basic password under 16, `*` in `CORS_ORIGINS`, or (with `--db`) a `DATABASE_URL`
+that is unset or SQLite. Set real values (`openssl rand -hex 32`), or use `APP_ENV=development`
 locally.
 
 ## A spec is refused on upload (422)
@@ -115,7 +135,9 @@ stored.
 
 `spec_too_large` (413): the spec (a file upload, pasted text or a playground lint) is over
 `MAX_SPEC_BYTES` (5 MiB); the message says so. `payload_too_large`
-(413): the whole request body is over `MAX_BODY_BYTES` (25 MB). Raising `MAX_SPEC_BYTES`
+(413): the whole request body is over its route's limit: `MAX_BODY_BYTES` (8 MiB) for
+`/api/v1/lint` and the spec uploads, `MAX_SMALL_BODY_BYTES` (64 KiB) for every other route
+(the message names the setting that applies). Raising `MAX_SPEC_BYTES`
 helps zip bundles (up to 20 MiB in total) but not a single document over 5 MiB, which the
 generator refuses anyway; split such a document.
 
@@ -169,13 +191,16 @@ because titles, descriptions and examples are not part of the comparison.
 
 429 with `Retry-After`. Either sign-in (20 attempts a minute per address) or an API key's
 limit (its `rpm_limit`, or `DEFAULT_RPM_LIMIT`, 600 a minute). Wait, or raise the key's
-limit (API keys, Edit). Five wrong passwords in a row lock the account for 15 minutes
-(`account_locked`); an owner can reset it with `create-owner`, or wait.
+limit (API keys, Edit). Five wrong passwords from one address lock that address out of
+that account for 15 minutes (`account_locked`), while sign-in from other addresses keeps
+working; 50 failures from anywhere lock the account for everyone. Wait, or reset an owner
+with `create-owner`.
 
 ## The service refuses to start: unsafe production configuration
 
 `ENVIRONMENT=production` with demo secrets, equal secrets, `COOKIE_SECURE=false`,
-`STORAGE=local`, or `AWS_ENDPOINT_URL` with `APIFORGE_CLOUD=aws`. The message lists every
+`STORAGE=local`, `AWS_ENDPOINT_URL` with `APIFORGE_CLOUD=aws`, `*` or a non-https origin in
+`CORS_ORIGINS`, the default or a localhost `DATABASE_URL`, or no `METRICS_TOKEN`. The message lists every
 problem; [configuration.md](configuration.md#production-boot-guards) explains each.
 
 ## Local stack problems

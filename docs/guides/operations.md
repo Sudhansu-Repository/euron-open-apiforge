@@ -4,6 +4,7 @@ Running APIForge day to day: the processes, the worker and its retries, stuck
 generations, metrics, alarms, logs, backups, archive retention and secrets. Deployment is
 in [deploy-aws.md](deploy-aws.md); settings in [configuration.md](configuration.md).
 
+- [Deploying a new release](#deploying-a-new-release)
 - [Processes](#processes)
 - [The worker](#the-worker)
 - [Retries and failures](#retries-and-failures)
@@ -19,14 +20,23 @@ in [deploy-aws.md](deploy-aws.md); settings in [configuration.md](configuration.
 - [Users, owners and API keys](#users-owners-and-api-keys)
 - [Upgrading the generator](#upgrading-the-generator)
 
+## Deploying a new release
+
+`make aws-deploy` migrates before it rolls out: the services stay on the running tag
+while the migrate task runs on the new one, then the services move to the new tag
+([deploy-aws.md](deploy-aws.md#one-command-deploy)). The previous release keeps serving
+against the new schema until the rollout ends, so every migration must be backward
+compatible with the release before it: add first, remove a release later. A failed
+migration stops the deploy with the old release still serving.
+
 ## Processes
 
 | Process | Command | Replicas | Notes |
 | ------- | ------- | -------- | ----- |
 | api | `apiforge-server serve` | 1 or more | Stateless; one uvicorn process per container (`WEB_CONCURRENCY=1`) |
-| worker | `apiforge-server worker` | 1 or more | Runs queued generations; its own `/metrics` on 9464 |
+| worker | `apiforge-server worker` | 1 or more (aws-prod autoscales 1 to 4 on CPU) | Runs queued generations; its own `/metrics` on 9464 |
 | web | Next.js standalone server | 1 or more | Proxies `/api` to the API |
-| migrate | `apiforge-server migrate` | one-off | Before a new version starts (Compose: a one-shot service; AWS: `make aws-migrate`) |
+| migrate | `apiforge-server migrate` | one-off | Before a new version serves (Compose: a one-shot service; AWS: `make aws-migrate`, run by `aws-deploy.sh` on the new image while the services still run the old one). Takes a Postgres advisory lock (one migrator at a time) and sets `lock_timeout = '10s'` |
 
 ## The worker
 
@@ -154,6 +164,7 @@ The `observability` module creates CloudWatch alarms that notify the SNS topic (
 | `<prefix>-api-unhealthy`, `<prefix>-web-unhealthy` | Tasks fail load balancer health checks |
 | `<prefix>-api-latency-p95` | api p95 response time above `api_p95_latency_seconds` (1.5 s) |
 | `<prefix>-<service>-cpu`, `<prefix>-<service>-memory` | A service's CPU or memory sustained above 85% |
+| `<prefix>-<service>-not-running` | No CPU samples for 5 minutes (missing data counts as breaching): no running task, from a crash loop, a failed deploy or missing capacity. One per ECS service, the worker included |
 | `<prefix>-db-cpu`, `-db-storage`, `-db-connections` | Database CPU above 80%, free storage below 5 GiB, connections above 80% of the ceiling |
 | `<prefix>-cache-node-N-memory`, `-cpu` | A cache node above 80% memory (evictions drop cached reads and rate limit windows) or engine CPU |
 | `<prefix>-worker-job-failures` | Worker log lines `job failed`: the generation loop itself raised (for example Postgres unreachable during a claim). The worker has no other jobs |
@@ -221,11 +232,15 @@ orphan object (archives still expire on their own).
 
 - **API:** add tasks (`api_min_count`/`api_max_count`); configure Redis when there is more
   than one, so rate limits, the lint cache and config invalidation are shared.
-- **Worker:** add replicas or raise `WORKER_CONCURRENCY`. Each generation uses one CPU
-  core while it renders and formats; size `WORKER_CONCURRENCY` to the task's vCPUs.
+- **Worker:** workers autoscale on CPU between `worker_count` and `worker_max_count` (1
+  to 4 in aws-prod; fixed at 1 in aws-dev). Raise `worker_max_count`, or
+  `WORKER_CONCURRENCY`. Each generation uses one CPU core while it renders and formats;
+  size `WORKER_CONCURRENCY` to the task's vCPUs.
 - **Database connections:** keep
   `(api tasks + workers + migrate) x (DB_POOL_SIZE + DB_MAX_OVERFLOW)` under the server's
-  `max_connections`.
+  `max_connections`, counting a deploy at full scale, when old and new tasks overlap.
+  aws-prod is sized for (2 x 8 api + 2 x 4 worker + 1 migrate) x (5 + 10) = 375 under
+  400; aws-dev uses a pool of 5 plus 5.
 
 ## Rotating secrets
 
@@ -243,6 +258,12 @@ Locally, delete `deploy/compose/.env` and run `make env` (then `make down && mak
 - `apiforge-server create-owner --email ...` creates an owner or resets an existing user
   to owner with a new password (and ends their sessions). Locally `make admin
   EMAIL=...`; on AWS `make aws-admin ENV=... EMAIL=...`.
+- On AWS, `make aws-admin` hashes the password locally (`apiforge-server hash-password`,
+  uv required) and the task receives only `APIFORGE_OWNER_PASSWORD_HASH`.
+- Sign-in lockout: 5 wrong passwords from one client address lock that address out of
+  that account for 15 minutes (`login_failures`); the account itself locks for everyone
+  only after 50 failures from anywhere. A locked account is unlocked by waiting, or by
+  `create-owner` for an owner.
 - Keep at least two owners. The API refuses to demote or disable the last one.
 - Disabling a user or changing their role ends their sessions immediately.
 - Revoke an API key from the web app (API keys, Revoke): it is refused on its next

@@ -66,7 +66,7 @@ the generated code never share a file.
 > [!NOTE]
 > Everything in the tour ran for real: Docker Compose on a laptop, with S3 and KMS emulated
 > locally and provisioned by the same Terraform modules that build production. The projects
-> come from the five bundled example specs; every generation in it was produced by the worker
+> come from five of the six bundled example specs; every generation in it was produced by the worker
 > from those specs. `make up && make demo` reproduces it.
 
 <h3 align="center">Built by the team behind Euron</h3>
@@ -144,7 +144,7 @@ APIForge is built around the second generation, not the first:
 | **Regeneration** | Generation gap, `apiforge.lock`, stubs appended for new operations, `apiforge diff` to preview |
 | **Service** | Projects, spec versions with diffs, lint playground, worker queue on Postgres, file browser, zips with ETags, roles, read-only API keys, audit log |
 | **Infrastructure** | 9 Terraform modules, 3 environments; the full AWS stack applied end to end against Floci |
-| **Tests** | 75 generator unit, 12 corpus projects, 51 API unit, 57 integration (under 4 backend combinations), 43 web, 17 browser end to end, a browser QA sweep of 88 pages |
+| **Tests** | 85 generator unit, 15 corpus tests, 55 API unit, 61 integration (under 4 backend combinations), 43 web, 17 browser end to end, a browser QA sweep of 88 pages |
 | **License** | MIT |
 
 ## 🖼️ Screenshots
@@ -256,14 +256,14 @@ Measured with `make bench` against the production images in Docker Compose on a 
 
 | | p50 | p95 |
 | --- | ---: | ---: |
-| Lint the bookstore spec (11 operations), not cached | 72.7 ms | 80.0 ms |
-| Lint the same spec again (cached by content) | 3.9 ms | 5.1 ms |
-| Upload a spec version (lint, store, diff) | 18.6 ms | 28.1 ms |
-| A generation in the worker, claimed to stored | 107.5 ms | 121.0 ms |
-| Download an archive | 4.6 ms | 5.5 ms |
-| View a generated file (cached archive) | 3.4 ms | 3.8 ms |
-| List projects | 5.0 ms | 6.2 ms |
-| Overview | 5.7 ms | 6.9 ms |
+| Lint the bookstore spec (11 operations), not cached | 72.5 ms | 83.1 ms |
+| Lint the same spec again (cached by content) | 3.7 ms | 4.5 ms |
+| Upload a spec version (lint, store, diff) | 18.3 ms | 22.0 ms |
+| A generation in the worker, claimed to stored | 122.5 ms | 197.0 ms |
+| Download an archive | 5.5 ms | 7.9 ms |
+| View a generated file (cached archive) | 3.6 ms | 4.6 ms |
+| List projects | 5.2 ms | 6.1 ms |
+| Overview | 5.8 ms | 6.6 ms |
 
 Twenty generations queued at once all finished in 1.8 s: 11 a second from one worker. The
 generator alone takes 72 to 121 ms per bundled spec in process, including the zip; a
@@ -328,7 +328,7 @@ Open http://localhost:8000/docs: every operation already answers with example da
 implement `app/handlers/`, change the spec and run `apiforge generate` into the same folder
 again. `apiforge diff` previews a regeneration, `apiforge verify my-api` installs the project
 and runs its lint, type check and tests, and `apiforge examples --copy specs/` gives you the
-five bundled specs. [CLI reference](docs/guides/cli.md),
+six bundled specs. [CLI reference](docs/guides/cli.md),
 [the generated project](docs/guides/generated-project.md).
 
 ## 🧭 Explore the repository
@@ -343,8 +343,8 @@ euron-open-apiforge/
 │   │       ├── crud.py examples.py      collection resources for --db, example data
 │   │       ├── generator.py writer.py   generate, the generation gap and apiforge.lock
 │   │       ├── fidelity.py verify.py    served OpenAPI against the spec, project gates
-│   │       ├── targets/fastapi/         the planner and 35 templates
-│   │       └── corpus/                  five example specs, from a pet store to edge cases
+│   │       ├── targets/fastapi/         the planner and 37 templates
+│   │       └── corpus/                  six example specs, from a pet store to edge cases
 │   ├── api/                 apiforge_server: API, worker, CLI, benchmark, demo seed
 │   │   └── src/apiforge_server/
 │   │       ├── projects/        projects, spec versions, analysis, the playground, examples
@@ -401,7 +401,7 @@ The full list, and the settings of a generated project (`JWT_SECRET`, `API_KEYS`
 
 ```bash
 cp infra/terraform/envs/aws-dev/terraform.tfvars.example infra/terraform/envs/aws-dev/terraform.tfvars
-make aws-deploy ENV=aws-dev TAG=0.1.0      # registries, images, apply, migrations, wait
+make aws-deploy ENV=aws-dev TAG=0.1.0      # registries, images, migrate first, then roll out
 APIFORGE_OWNER_PASSWORD=... make aws-admin ENV=aws-dev EMAIL=you@example.com   # first owner
 ```
 
@@ -418,7 +418,7 @@ checkov, and the full `aws-dev` stack is applied, re-planned and destroyed again
 | --- | --- |
 | Hostile specs | Size, depth, YAML alias and `$ref` expansion budgets; zip declared sizes, unsafe paths and unreadable members refused; URL `$ref`s refused, never fetched; every spec string escaped as a Python literal, docstring or comment before it reaches generated code (Hypothesis property tests) |
 | Generated code | Never executed by the service; a lock file from disk can only name files in the generated folders; formatted and type checked in the corpus suite; auth that fails closed and production guards for weak secrets |
-| Service | argon2id, atomic lockout and per-IP throttling, owner, admin and viewer roles enforced in the API, CSRF header, CSP and HSTS, sessions ended on sign-out, password or role change |
+| Service | argon2id, atomic lockout per account and client address (one client cannot lock an owner out for everyone) and per-IP throttling, owner, admin and viewer roles enforced in the API, CSRF header, CSP and HSTS, sessions ended on sign-out, password or role change |
 | Keys | `afk_` keys stored only as peppered HMACs, shown once, read only and rate limited |
 | Data | Specs and archives in a private, KMS-encrypted bucket, rows keep only keys; an append-only audit log enforced by a database trigger |
 | Infrastructure | Private subnets, TLS, least-privilege task roles, WAF, `/metrics` restricted, checkov clean |
@@ -430,11 +430,11 @@ Report vulnerabilities privately: see [SECURITY.md](SECURITY.md). Details:
 
 | Suite | What it proves | Run |
 | --- | --- | --- |
-| Generator unit (75) | Loader and expansion budgets, hostile input (Hypothesis), hostile zips and lock files, normalization, example data that validates, fidelity comparison, determinism, the writer and lock file, the CLI, no network | `make test` |
-| Corpus (12) | Each of the five bundled specs, with and without `--db`, a hostile spec and a 240-operation spec generate a project whose own ruff, mypy `--strict` and tests pass, including the round trip of the served OpenAPI; the `--db` projects pass their tests again on Postgres | `make test-corpus` |
-| API unit (51) | Config guards, security primitives, storage, the archive cache bounds, slugs, the OpenAPI drift check | `make test` |
+| Generator unit (85) | Loader and expansion budgets, hostile input (Hypothesis), hostile zips and lock files, normalization, example data that validates, fidelity comparison, determinism, the writer and lock file, the CLI, no network | `make test` |
+| Corpus (15) | Each of the six bundled specs, with and without `--db`, a hostile spec and a 240-operation spec generate a project whose own ruff, mypy `--strict` and tests pass, including the round trip of the served OpenAPI; the `--db` projects pass their tests again on Postgres; one more test runs the generated team-tasks app with runtime checks of its auth, paging, replace and production behaviour | `make test-corpus` |
+| API unit (55) | Config guards, security primitives, storage, the archive cache bounds, slugs, the OpenAPI drift check | `make test` |
 | Web (43) | The file tree, status chips, spec change summaries, lint grouping and errors, formatting, navigation and roles, components | `make test` |
-| Integration (57) | The real API and worker against Postgres, Redis and Floci: uploads and idempotency, diffs, the report gate, the web archive equal to the CLI's bytes, ETags and 304s, lease retry, fencing and `worker_lost`, concurrent claims, zip and YAML bombs, URL refs never fetched, filename traversal, RBAC and read-only keys | `make test-integration` |
+| Integration (61) | The real API and worker against Postgres, Redis and Floci: uploads and idempotency, diffs, the report gate, the web archive equal to the CLI's bytes, ETags and 304s, lease retry, fencing and `worker_lost`, concurrent claims, zip and YAML bombs, URL refs never fetched, filename traversal, RBAC and read-only keys | `make test-integration` |
 | Option matrix (4 runs) | The integration suite under every cache and storage backend (Redis or none, disk or S3) | `make test-matrix` |
 | Browser (17) | Sign in and out with safe redirects, a project from upload to download, the report gate, the playground, project settings, read-only keys against the API, users and roles, the theme | `make e2e` |
 | Browser QA (88 pages) | Every page in light and dark at desktop and phone width: no console errors, failed requests, broken images, overflow or unexplained empty states | `make qa` |

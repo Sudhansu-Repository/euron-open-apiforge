@@ -3,7 +3,12 @@
 Every table is created by the first Alembic revision,
 [`0001_initial_schema.py`](../../apps/api/src/apiforge_server/migrations/versions/0001_initial_schema.py),
 generated from the SQLAlchemy models in each domain's `models.py`;
-`0002_audit_action_index.py` adds one index to the audit log. New changes are new
+`0002_audit_action_index.py` adds one index to the audit log, and
+`0003_login_failures_per_address.py` adds the `login_failures` table. Every migration
+takes a Postgres advisory lock (one migrator at a time) and runs with
+`lock_timeout = '10s'` ([`migrations/env.py`](../../apps/api/src/apiforge_server/migrations/env.py)),
+and must stay backward compatible with the previous release, which keeps serving while
+`aws-deploy.sh` migrates. New changes are new
 revisions; an applied revision is never edited.
 
 - [Conventions](#conventions)
@@ -42,6 +47,7 @@ erDiagram
   projects ||--o{ generations : "has generations"
   spec_versions ||--o{ generations : "generated from"
   users ||--o{ api_keys : "created_by"
+  users ||--o{ login_failures : "per address"
   users ||..o{ projects : "created_by (no FK)"
   users ||..o{ spec_versions : "created_by (no FK)"
   users ||..o{ generations : "created_by (no FK)"
@@ -170,8 +176,8 @@ stateDiagram-v2
 | `role` | varchar(16) | `owner`, `admin` or `viewer` (default `viewer`) |
 | `disabled` | boolean | A disabled user cannot sign in, and their sessions stop working |
 | `last_login_at` | timestamptz | |
-| `failed_logins` | integer | Counted atomically; reset on success or when a lock starts |
-| `locked_until` | timestamptz | 15 minutes after the fifth consecutive failure |
+| `failed_logins` | integer | Account-wide failures from any address, counted atomically; reset on success or when a lock starts |
+| `locked_until` | timestamptz | The account-wide lock: 15 minutes after the 50th failure. Per-address locks live in `login_failures` |
 | `session_version` | integer | Bumped on password change, role change or disabling; sessions carrying an older value are refused |
 | `created_at` | timestamptz | `now()` |
 
@@ -184,6 +190,22 @@ not in a cache, so eviction can never bring a signed-out session back.
 | ------ | ---- | ----- |
 | `jti` | varchar(64) | Primary key: the token's id |
 | `expires_at` | timestamptz | Indexed; rows past it are pruned on later sign-outs |
+
+### `login_failures`
+
+Sign-in failures per account and client address (revision
+[`0003_login_failures_per_address.py`](../../apps/api/src/apiforge_server/migrations/versions/0003_login_failures_per_address.py)).
+Five failures from one address lock that address out of that account for 15 minutes,
+without locking the account for anyone else.
+
+| Column | Type | Notes |
+| ------ | ---- | ----- |
+| `user_id` | uuid | FK `users.id`, `ON DELETE CASCADE`; part of the primary key |
+| `ip` | varchar(64) | The client address as resolved through `FORWARDED_ALLOW_IPS` (empty when unknown); part of the primary key |
+| `failures` | integer | Counted by an atomic upsert; reset when a lock starts |
+| `locked_until` | timestamptz | Set to 15 minutes ahead at the fifth failure |
+
+A successful sign-in from the address deletes its row.
 
 ### `api_keys`
 

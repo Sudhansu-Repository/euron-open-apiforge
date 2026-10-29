@@ -29,13 +29,15 @@ pet-store/
     handlers/
       pets.py                   yours: one module per tag, one function per operation
     generated/                  APIForge's: rewritten on every generation, do not edit
-      app.py                    build_app(): the FastAPI app, error handler, /health
+      app.py                    build_app(): the FastAPI app, error handlers, docs switch, /health
+      middleware.py             security headers and the request body limit
+      wire.py                   parameter values as text on the wire (enums of numbers and booleans)
       models.py                 Pydantic v2 models with the spec's validation rules
       routers/pets.py           one router per tag: the routes, calling your handlers
-      security.py               one dependency per security scheme
+      security.py               one dependency per security scheme, require() and unsupported()
       principal.py              Principal: who is calling
       errors.py                 ApiError, for documented error responses
-      mock.py                   schema-valid example responses
+      mock.py                   schema-valid example responses (501 in production)
       db_models.py, crud.py     (--db) SQLAlchemy tables and a repository per resource
       openapi.json              the spec, bundled into one document
   tests/
@@ -58,7 +60,9 @@ everything else is yours. Your files are created once and never rewritten
 | `app/handlers/<tag>.py` | you | Your logic. Each function receives validated arguments and returns the success response |
 | `app/generated/routers/<tag>.py` | APIForge | Routes with the spec's paths, parameters (spec names kept on the wire, Python names in your code), bodies, response models, documented responses and security |
 | `app/generated/models.py` | APIForge | Models, enums and aliases; `XInput` models where `readOnly` or `writeOnly` fields make request and response shapes differ |
-| `app/generated/mock.py` | APIForge | One function per operation (and per documented error) returning an example that validates against the schema |
+| `app/generated/mock.py` | APIForge | One function per operation (and per documented error) returning an example that validates against the schema. With `APP_ENV=production` it answers 501 `{"detail": "Not implemented"}` instead and logs a warning the first time each operation is called |
+| `app/generated/middleware.py` | APIForge | Security headers on every response (`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`) and the `MAX_BODY_BYTES` limit (413, chunked bodies counted) |
+| `app/generated/wire.py` | APIForge | Lets number and boolean enums in query, path, header and cookie parameters accept their text form (`?level=2` matches the member `2`) |
 | `tests/generated/test_<tag>.py` | APIForge | Per operation: answers with a documented status and a schema-valid body; rejects invalid input with 422; requires credentials where the spec does |
 | `tests/generated/test_spec.py` | APIForge | Starts the app and compares the OpenAPI it serves with `app/generated/openapi.json` ([fidelity.md](../architecture/fidelity.md)) |
 | `tests/generated/test_crud_<resource>.py` | APIForge | (--db) Create, read back, update, list, delete, 404 after delete |
@@ -73,7 +77,7 @@ uv sync
 uv run uvicorn app.main:app --reload        # or: make run
 ```
 
-Open http://localhost:8000/docs (Swagger UI) or `/redoc`. `GET /health` answers
+Open http://localhost:8000/docs (Swagger UI) or `/redoc` (on by default outside production). `GET /health` answers
 `{"status": "ok"}` unless the spec defines its own `/health`. Every operation answers
 right away: with `--db`, collection resources store real rows in SQLite (`app.db`); every
 other operation returns its example from `mock.py`.
@@ -103,7 +107,10 @@ async def get_pet(
   `pattern=re.compile(...)`, so look-aheads such as `^(?!admin)` work, the same engine the
   models use), with Python names (`petId` becomes `pet_id`,
   `X-Request-Id` becomes `x_request_id`); the route keeps the spec's names on the wire.
-- The return annotation is the success response model. Return an instance (or anything
+- The return annotation is the success response model. An operation the spec documents
+  only with a `default` response answers 200 with that body (the lint report warns with
+  `no_success_response`, and `test_spec.py` lists the extra 200 as an accepted
+  difference). Return an instance (or anything
   Pydantic can validate into it); return `None` for a response without a body.
 - For an operation with security, the handler also receives `principal: Principal` (the
   caller: `subject`, `scheme`, `scopes`, `claims`).
@@ -145,14 +152,28 @@ or cookie, HTTP basic) and hands it to your `app/auth.py`:
 
 | Scheme | Function in `app/auth.py` | Default behaviour | Settings |
 | ------ | ------------------------- | ----------------- | -------- |
-| HTTP bearer, OAuth2, OpenID Connect | `verify_<scheme>(token)` | A JWT signed with `JWT_SECRET` (`JWT_ALGORITHM`, optional `JWT_AUDIENCE`), requiring `sub` and `exp`; scopes from `scope` (space separated) or `scopes`. An empty secret accepts nothing | `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_AUDIENCE` |
+| HTTP bearer, OAuth2, OpenID Connect | `verify_<scheme>(token)` | A JWT verified with `JWT_SECRET` (`JWT_ALGORITHM` one of HS256, HS384, HS512; optional `JWT_AUDIENCE`; `iss` required and checked when `JWT_ISSUER` is set; `JWT_LEEWAY_SECONDS` of clock skew), requiring `sub` and `exp`; scopes from `scope` (space separated), `scp` or `scopes`. An empty secret accepts nothing. Keys are not fetched (JWKS is on the roadmap) | `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_AUDIENCE`, `JWT_ISSUER`, `JWT_LEEWAY_SECONDS` |
 | API key (header, query, cookie) | `verify_<scheme>(key)` | One of `API_KEYS`, compared in constant time | `API_KEYS` |
 | HTTP basic | `verify_<scheme>(username, password)` | A user in `BASIC_USERS`, compared in constant time | `BASIC_USERS` |
 
-A missing or invalid credential is 401 with `WWW-Authenticate`. For OAuth2 and OpenID
-Connect, missing scopes are 403. When an operation lists alternatives (`security: [{a:
-[]}, {b: []}]`), the first scheme that accepts the request wins. Operations without
-security stay open. An empty `{}` alternative makes authentication optional: requests
+How a route's `security` is read:
+
+- **Inside one requirement object, every scheme is required (AND):** `{apiKey: [],
+  bearer: []}` needs both credentials. **Separate objects are alternatives (OR):**
+  `[{apiKey: []}, {bearer: []}]` accepts either.
+- `require()` in `app/generated/security.py` decides once it has seen every credential:
+  the first alternative whose credentials are all present, valid and carry the required
+  scopes wins. It answers 403 only when an alternative authenticated but lacked a scope and
+  none succeeded; otherwise 401, with a `WWW-Authenticate` challenge that matches the
+  route's schemes (`Basic`, `Bearer`, `APIKey`). A malformed Basic header counts as no
+  credential.
+- An alternative that uses a scheme APIForge cannot check (HTTP digest, mutual TLS) is
+  dropped and reported (`security_scheme_unsupported`). If no alternative is left, the
+  route depends on `security.unsupported`, which always answers 401: the route fails
+  closed. To accept such requests, check the credential yourself and override the
+  dependency in `app/main.py`:
+  `app.dependency_overrides[security.unsupported] = your_check`.
+- Operations without security stay open. An empty `{}` alternative makes authentication optional: requests
 without credentials are allowed and the handler receives no principal (the lint report
 notes it as `optional_auth`).
 
@@ -161,8 +182,9 @@ provider's keys (for example PyJWT's `PyJWKClient` against your JWKS endpoint), 
 API key in your database, and return a `Principal`. The generated dependencies and the
 generated auth tests keep working as long as a valid credential gives a `Principal` and an
 invalid one gives `None`. The generated tests sign tokens with the `JWT_SECRET` from
-`tests/generated/conftest.py`; if you switch to asymmetric keys, override that fixture in a
-`tests/conftest.py` of your own.
+`tests/generated/conftest.py`, whose `with_credentials(schemes, scopes)` takes a list of
+scheme names (every scheme of an AND requirement); if you switch to asymmetric keys,
+override that fixture in a `tests/conftest.py` of your own.
 
 ## Persistence with --db
 
@@ -173,16 +195,23 @@ With `--db`, every collection resource (`GET/POST /things` and
   objects);
 - a `Repository` in `app/generated/crud.py` with `list` (paging with
   `limit`/`offset` or `page`/`pageSize`, equality filters on query parameters), `count`,
-  `create`, `get`, `replace`, `update` (partial) and `delete`. A query parameter filters
+  `create`, `get`, `replace`, `update` (partial) and `delete`. Missing `limit`, `offset`,
+  `page` or `page_size` values mean the defaults (100 rows, at most 1000), and an offset
+  past 2**63 - 1 returns an empty list. `replace` (PUT) sets only the input model's
+  fields, so the id and `readOnly` columns the server manages are kept. A query parameter filters
   the column whose wire name it shares (`?status=` filters `status`, even though the
   handler's argument is `status_`); JSON columns (arrays, nested objects) are never offered
   as filters;
 - handlers that call the repository and raise the documented 404 (their docstrings say the
   response is "kept in the database through `crud.<resource>`", and the handler module's
   docstring says which operations already use the database);
-- `app/db.py` (yours): the engine from `DATABASE_URL` and a `session_scope()` context
-  manager;
-- Alembic: `alembic.ini`, `migrations/env.py` (reads `DATABASE_URL` and the generated
+- `app/db.py` (yours): the engine from `DATABASE_URL` (on Postgres with the pool settings
+  `DB_POOL_SIZE` and `DB_MAX_OVERFLOW` and a `DB_STATEMENT_TIMEOUT_MS` statement timeout)
+  and a `session_scope()` context manager;
+- a write the database refuses (a unique value taken, a required value missing) answers
+  409 without SQL or values in the body;
+- Alembic: `alembic.ini`, `migrations/env.py` (reads only `DatabaseSettings`, that is
+  `DATABASE_URL` and the pool settings, not the app's secrets, plus the generated
   metadata) and `migrations/versions/0001_initial.py`;
 - `tests/generated/test_crud_<resource>.py`: a full round trip on a fresh database (SQLite
   by default). The generated `tests/generated/conftest.py` disposes the engine after each
@@ -255,10 +284,20 @@ regenerate instead: the spec is the API's source of truth.
 ## Ship it
 
 - `docker compose up --build` runs the API on port 8000 (with Postgres when `--db`).
+- Commit `uv.lock` (`uv sync` writes it). The Dockerfile copies `uv.lock*` and installs
+  with `uv sync --locked` when it is there (failing if it is out of date with
+  `pyproject.toml`); without it the build resolves fresh versions and prints a warning.
+  The generated CI workflow does the same.
 - The `Dockerfile` is a slim Python 3.12 image, non-root (uid 10001), with a health check
   on `/health`. With `--db` it also carries `alembic.ini` and `migrations/`, so the same
   image runs `alembic upgrade head` before a production start.
 - `.github/workflows/ci.yml` runs ruff, mypy and pytest on every push and pull request.
-- Set `APP_ENV=production` in production: `app/config.py` then refuses a `JWT_SECRET`
-  under 32 characters, API keys under 24, basic passwords under 16 and `*` in
-  `CORS_ORIGINS`.
+- Set `APP_ENV=production` in production. `app/config.py` then refuses a `JWT_SECRET`
+  under 32 characters, a `JWT_ALGORITHM` other than HS256, HS384 or HS512, API keys under
+  24, basic passwords under 16, `*` in `CORS_ORIGINS`, and with `--db` a missing or SQLite
+  `DATABASE_URL`. `/docs`, `/redoc` and `/openapi.json` are off unless `DOCS_ENABLED=true`,
+  and operations whose handler still returns the mock answer 501.
+- Every error body is JSON and never echoes input or internals: 409 for a database
+  conflict, 413 over `MAX_BODY_BYTES`, 422 validation errors without the `input` field, and
+  `{"detail": "Internal server error"}` with 500 for anything unhandled. Every response
+  carries the security headers listed above.

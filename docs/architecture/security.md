@@ -15,6 +15,7 @@ vulnerability, see [SECURITY.md](../../SECURITY.md).
 - [Roles](#roles)
 - [Read-only API keys](#read-only-api-keys)
 - [The worker](#the-worker)
+- [Secrets in transit to one-off tasks](#secrets-in-transit-to-one-off-tasks)
 - [Secrets at rest](#secrets-at-rest)
 - [Metrics endpoint](#metrics-endpoint)
 - [Audit log](#audit-log)
@@ -75,7 +76,7 @@ The same loader runs on the CLI and in the service
 
 | Control | Limit |
 | ------- | ----- |
-| Document size | 5 MiB per file (`MAX_BYTES`); the service also refuses uploads over `MAX_SPEC_BYTES` and bodies over `MAX_BODY_BYTES` |
+| Document size | 5 MiB per file (`MAX_BYTES`); the service also refuses specs over `MAX_SPEC_BYTES`, bodies over `MAX_BODY_BYTES` (8 MiB) on the three spec routes, and bodies over `MAX_SMALL_BODY_BYTES` (64 KiB) on every other route, sign-in included, before parsing |
 | Multi-file specs | At most 200 files and 20 MiB in total |
 | YAML | A `SafeLoader` subclass: no tags, no Python objects; timestamps stay strings |
 | YAML aliases | At most 10,000 alias events while composing |
@@ -167,9 +168,12 @@ or without `--force`, and `operations` entries that are not objects are ignored.
 - **Passwords:** Argon2id (argon2-cffi defaults), at least 10 characters with upper and
   lower case letters and a digit. Unknown emails are verified against a dummy hash so they
   take the same time as known ones.
-- **Lockout:** 5 consecutive failures lock the account for 15 minutes; failures are
-  counted with one atomic `UPDATE ... RETURNING`, so parallel guesses cannot share a count.
-  Per address, 20 attempts a minute (KV store). The client address comes from uvicorn's
+- **Lockout, per account and client address:** 5 failures from one address lock that
+  address out of that account for 15 minutes (`login_failures`, keyed by user and
+  address). The account itself locks for everyone only after 50 failures from anywhere
+  (`users.failed_logins`), so one client can no longer lock the owner out for everyone.
+  Failures are counted with atomic upserts and `UPDATE ... RETURNING`, so parallel guesses
+  cannot share a count. Per address, 20 attempts a minute (KV store). The client address comes from uvicorn's
   proxy-header handling, which trusts `X-Forwarded-For` only from `FORWARDED_ALLOW_IPS`.
 - **Sessions:** HS256 JWTs signed with `SESSION_SECRET`, audience `apiforge-dashboard`, a
   random `jti`, the user's `session_version`, 12 hour expiry (`SESSION_TTL_HOURS`). The web
@@ -221,6 +225,15 @@ leave one). Proven by `tests/integration/test_admin.py::test_roles_are_enforced`
   `GENERATION_MAX_ATTEMPTS` crashes it stops being retried.
 - Errors are recorded on the row for the user; tracebacks stay in the worker log.
 
+## Secrets in transit to one-off tasks
+
+ECS task overrides are readable by anyone allowed to describe the task, so the owner
+password never goes into one. `scripts/aws-run-task.sh` hashes `APIFORGE_OWNER_PASSWORD` on
+the operator's machine with `apiforge-server hash-password` (argon2id, through uv) and
+sends only `APIFORGE_OWNER_PASSWORD_HASH`; `create-owner` refuses a hash that is not
+argon2id. On RDS, `log_parameter_max_length` and `log_parameter_max_length_on_error` are
+0, so bind values (password and key hashes among them) never reach CloudWatch logs.
+
 ## Secrets at rest
 
 | Secret | Where | Notes |
@@ -267,15 +280,31 @@ table. Admins read it at `GET /api/v1/audit`.
 What APIForge puts into the projects it generates:
 
 - Security dependencies for every scheme the spec declares (bearer, OAuth2 and OpenID
-  Connect as JWT with scopes, API keys in a header, query or cookie, HTTP basic). A missing
-  or invalid credential is 401, a missing scope 403. Operations without security stay open,
-  as the spec says.
-- `app/auth.py` (yours) fails closed: an empty `JWT_SECRET` accepts no token; API keys and
-  basic passwords are compared in constant time, with the same work for unknown basic
+  Connect as JWT with scopes, API keys in a header, query or cookie, HTTP basic). Schemes
+  inside one requirement object are all required (AND); separate objects are alternatives
+  (OR). `require()` answers 403 only when an alternative authenticated but lacked a scope
+  and none succeeded, else 401 with a `WWW-Authenticate` challenge matching the route's
+  schemes; a malformed Basic header counts as no credential. Operations without security
+  stay open, as the spec says.
+- A scheme APIForge cannot check (HTTP digest, mutual TLS) never opens a route: its
+  alternative is dropped and reported, and a route with no alternative left depends on
+  `security.unsupported`, which always answers 401 until you override it in
+  `app/main.py`.
+- `app/auth.py` (yours) fails closed: an empty `JWT_SECRET` accepts no token; tokens need
+  `sub` and `exp`, `iss` when `JWT_ISSUER` is set, and only HS256, HS384 or HS512; API keys
+  and basic passwords are compared in constant time, with the same work for unknown basic
   users.
 - `app/config.py` (yours) refuses to start with `APP_ENV=production` and a `JWT_SECRET`
-  under 32 characters, an API key under 24, a basic password under 16, or `*` in
-  `CORS_ORIGINS`.
+  under 32 characters, an API key under 24, a basic password under 16, `*` in
+  `CORS_ORIGINS`, or with `--db` a missing or SQLite `DATABASE_URL`.
+- In production, operations whose handler still returns the mock answer 501 (and log a
+  warning once), and `/docs`, `/redoc` and `/openapi.json` are off unless
+  `DOCS_ENABLED=true`.
+- Request bodies over `MAX_BODY_BYTES` (10 MiB, chunked bodies counted) get 413. Error
+  bodies never echo input or internals: 409 for database conflicts without SQL or values,
+  422 without the `input` field, a bare JSON 500. Every response carries `nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and `frame-ancestors 'none'`.
+- Alembic reads only the database settings, so migrations run without the app's secrets.
 - `.env.example` carries no secrets; `.gitignore` excludes `.env`.
 
 The details and how to replace the defaults are in
@@ -292,14 +321,24 @@ when:
 - `SESSION_SECRET` equals `API_KEY_PEPPER`;
 - `APIFORGE_CLOUD=aws` and `AWS_ENDPOINT_URL` is set;
 - `COOKIE_SECURE` is false;
-- `STORAGE=local` (local disk is per container).
+- `STORAGE=local` (local disk is per container);
+- `CORS_ORIGINS` contains `*` or an origin that is not `https://`: CORS is credentialed,
+  and the CSRF header is in the allowed headers, so such an origin could act with a
+  signed-in user's cookie;
+- `DATABASE_URL` is the default or points at `localhost`;
+- `METRICS_TOKEN` is unset (`/metrics` lists project names).
 
 ## Operator checklist
 
 - Run with `ENVIRONMENT=production` and let the guards pass; never weaken them.
 - Serve over HTTPS only; set `COOKIE_SECURE=true` and `CORS_ORIGINS` to your web origin.
 - Set `FORWARDED_ALLOW_IPS` to your load balancer's network, never `*` on a public host.
-- Set `METRICS_TOKEN`, and restrict `/metrics` at the load balancer if you can.
+- Set `METRICS_TOKEN` (production refuses to boot without it), and restrict `/metrics` at
+  the load balancer if you can.
+- Keep migrations backward compatible with the previous release: `aws-deploy.sh` migrates
+  while the old release still serves.
+- Create the first owner with `make aws-admin`, which sends the task only an argon2id hash
+  of the password, never the password itself.
 - Use Redis when you run more than one API process, so rate limits are shared.
 - Give API keys an expiry and the narrowest rate limit CI needs; revoke unused ones.
 - Keep at least two owners; review the audit log.

@@ -46,7 +46,8 @@ app's editor sends). Both go through `upload_spec`:
 
 1. **Size.** At most `MAX_SPEC_BYTES` (5 MiB by default) is accepted, for the file
    upload and the text route alike; more is 413 `spec_too_large`, and the message names
-   `MAX_SPEC_BYTES`. The whole request body is separately bounded by `MAX_BODY_BYTES`.
+   `MAX_SPEC_BYTES`. The whole request body is separately bounded by `MAX_BODY_BYTES` (8 MiB
+   on these routes; every other route is held to `MAX_SMALL_BODY_BYTES`, 64 KiB).
 2. **File name.** Reduced to its last path component, characters outside
    `[A-Za-z0-9._-]` replaced with `-`, at most 120 characters, and `.yaml` appended
    unless it ends in `.yaml`, `.yml`, `.json` or `.zip`. A `.zip` is read as a bundle: the
@@ -266,7 +267,7 @@ Every error body is `{"error": {"code", "type", "message", "details"}}`.
 | 404 | `not_found` | Unknown project, version, generation, file or example |
 | 409 | `conflict` | A race (same number taken), or an archive that is not ready |
 | 410 | `content_expired` | The stored spec or archive is gone (bucket lifecycle) |
-| 413 | `spec_too_large`, `payload_too_large` | Over `MAX_SPEC_BYTES` or `MAX_BODY_BYTES` |
+| 413 | `spec_too_large`, `payload_too_large` | Over `MAX_SPEC_BYTES`, or the body over `MAX_BODY_BYTES` (spec routes) or `MAX_SMALL_BODY_BYTES` (every other route) |
 | 422 | `spec_unreadable`, `spec_invalid`, `spec_version_unsupported`, `spec_ref_unresolved`, `spec_too_complex` (a refused spec), `report_has_errors`, `validation_error`, `invalid_json`, `weak_password` | Input |
 | 429 | `rate_limited` | Login throttle or an API key's limit (`Retry-After` set) |
 | 500 | `internal_error` | A bug (no stack trace in the body) |

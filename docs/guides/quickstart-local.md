@@ -15,7 +15,7 @@ Requirements: Python 3.12 and [uv](https://docs.astral.sh/uv/).
 ```bash
 cd apps/forge
 uv sync
-uv run apiforge examples --copy ~/specs        # the five bundled example specs
+uv run apiforge examples --copy ~/specs        # the six bundled example specs
 uv run apiforge lint ~/specs/petstore.yaml
 uv run apiforge generate --spec ~/specs/petstore.yaml --output ~/pet-store
 ```
@@ -98,9 +98,10 @@ make demo
   `viewer@apiforge.local`, all with the password printed by `make demo`
   (`AF_DEMO_PASSWORD` in `deploy/compose/.env`);
 - a read-only API key named "CI download (read only)", printed once the first time;
-- one project per bundled example spec: Pet Store (three spec versions, generations with
+- a project for five of the six bundled example specs: Pet Store (three spec versions, generations with
   and without `--db`), Bookstore (two versions), Warehouse Inventory (`--db`), Secure Notes
-  and Edge Cases (a spec whose lint report has findings);
+  and Edge Cases (a spec whose lint report has findings). Team Tasks is not seeded; try it
+  in the playground or with `apiforge generate --accept-report`;
 - real generations, run through the worker's own code path, so every archive can be
   browsed and downloaded.
 

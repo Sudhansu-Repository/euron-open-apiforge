@@ -62,7 +62,8 @@ apps/forge/src/apiforge/
   targets/fastapi/plan.py        every signature, decorator and import, computed in Python;
                                  the file list
   targets/fastapi/templates/     one Jinja template per generated file
-  corpus/         bundled example specs (petstore, bookstore, inventory, secure-notes, edge-cases)
+  corpus/         bundled example specs (petstore, bookstore, inventory, secure-notes, edge-cases,
+                  team-tasks)
 ```
 
 The flow and each step's contract are in [generator.md](generator.md). Two rules hold
@@ -98,7 +99,8 @@ apps/api/src/apiforge_server/
   migrations/     Alembic env, runner, versions/0001_initial_schema.py
   main.py         create_app(): routers, middleware, lifespan
   worker.py       the job loop
-  cli.py          apiforge-server serve | worker | migrate | revision | openapi | create-owner | seed-demo
+  cli.py          apiforge-server serve | worker | migrate | revision | openapi | create-owner |
+                  hash-password | seed-demo
   bench.py        make bench
   openapi.py      the exported document (docs/api/openapi.yaml)
 ```
@@ -114,8 +116,9 @@ Middleware order (outermost first), from [`main.py`](../../apps/api/src/apiforge
    no-referrer`, `Cross-Origin-Opener-Policy`, `Permissions-Policy`), logs one line per
    request (quiet for `/healthz`, `/readyz` and `/metrics` unless the status is 400 or
    more).
-2. `BodySizeLimitMiddleware`: refuses `POST`, `PUT` and `PATCH` bodies over
-   `MAX_BODY_BYTES` with 413, checking `Content-Length` first and counting chunked bodies
+2. `BodySizeLimitMiddleware`: refuses `POST`, `PUT` and `PATCH` bodies over the route's
+   limit with 413 (`MAX_BODY_BYTES`, 8 MiB, on `/api/v1/lint` and the two spec upload
+   routes; `MAX_SMALL_BODY_BYTES`, 64 KiB, everywhere else), checking `Content-Length` first and counting chunked bodies
    as they arrive; parses JSON bodies with orjson and refuses invalid UTF-8 or a lone
    surrogate with 422 `invalid_json`; then replays the body to the app unchanged.
 3. `CORSMiddleware` with the `CORS_ORIGINS` allowlist and credentials.
@@ -175,9 +178,12 @@ becomes 409 `conflict` (the constraint name is logged, never the values);
 
 ### auth, users, keys, audit
 
-- `auth/service.authenticate`: lockout check, Argon2 verify in a thread (a dummy hash for
-  unknown emails), failure counted atomically in SQL (`UPDATE ... RETURNING`), lock for 15
-  minutes after 5 failures, audit rows for success and failure.
+- `auth/service.authenticate`: lockout check (this address for this account, and the
+  account as a whole), Argon2 verify in a thread (a dummy hash for unknown emails),
+  failures counted atomically in SQL (an upsert into `login_failures` and
+  `UPDATE ... RETURNING` on `users`): 5 from one address lock that address out of the
+  account for 15 minutes, 50 from anywhere lock the account; audit rows for success and
+  failure.
 - `auth/router.login`: 20 attempts a minute per client address (KV limiter; passes if the
   KV store is down), session token in the response and the httpOnly cookie,
   `Cache-Control: no-store`.

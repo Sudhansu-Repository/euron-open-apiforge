@@ -45,9 +45,11 @@ First public release: the generator and its CLI, the API and worker, and the web
   and a JSON pointer; errors block generation until the report is accepted.
 - CLI `apiforge lint | generate | diff | verify | examples`, offline, no account. Every
   refusal, including `verify` without uv (`tool_missing`), is a message and exit code 1.
-- Five bundled example specs: a pet store, a bookstore (OpenAPI 3.1, polymorphism, files,
-  OAuth2 scopes), a CRUD-heavy inventory, a notes API with every security scheme, and an
-  edge-case spec for the report.
+- Six bundled example specs: a pet store, a bookstore (OpenAPI 3.1, polymorphism, files,
+  OAuth2 scopes), a CRUD-heavy inventory, a notes API with every security scheme, an
+  edge-case spec for the report, and Team Tasks (AND and OR security requirements, an
+  unsupported digest scheme, read-only fields a PUT keeps, paging without defaults,
+  integer enum parameters, a default-only operation).
 - Service (`apiforge_server`): projects with numbered spec versions (linted on upload,
   stored in object storage, idempotent by SHA-256, compared with the previous version by
   operation fingerprints), a diff between any two versions, a lint playground, the
@@ -121,6 +123,47 @@ Hardening from an independent review before release:
 - A spec with no paths generates a valid project; unused imports are removed only in the
   generated folders; a formatting failure reports ruff's output; DEL is escaped in the
   generated `pyproject.toml`.
+
+### Production readiness
+
+Service and infrastructure:
+
+- `aws-deploy.sh` migrates before it rolls out: the services stay on the running tag while
+  the migrate task runs on the new one (`migrate_image_tag`), then the services move.
+  Migrations must stay backward compatible with the previous release; they take a Postgres
+  advisory lock and run with `lock_timeout = '10s'`.
+- Request bodies: `MAX_BODY_BYTES` (now 8 MiB) only on the lint and spec upload routes;
+  every other route, sign-in included, is capped at `MAX_SMALL_BODY_BYTES` (64 KiB) before
+  parsing.
+- The production guard also refuses `*` or non-https CORS origins, the default or a
+  localhost `DATABASE_URL`, and an unset `METRICS_TOKEN`.
+- Sign-in lockout per account and client address (5 failures, new `login_failures`
+  table); the account itself locks only at 50 failures, so one client cannot lock an owner
+  out for everyone.
+- `make aws-admin` hashes the owner password locally (`apiforge-server hash-password`) and
+  the task receives only `APIFORGE_OWNER_PASSWORD_HASH`; RDS logs no bind values.
+- Workers autoscale on CPU (1 to 4 in prod); every ECS service has a `not-running` alarm;
+  aws-prod warns when `alarm_email` is unset; database pools are sized for a deploy at
+  full scale; the ALB routes `/health` to the api; CI actions updated.
+
+Generated projects:
+
+- Security requirements follow OpenAPI: AND inside a requirement, OR across them. A scheme
+  APIForge cannot check fails closed through `security.unsupported` (401, overridable).
+  Scopes are decided once every credential is seen (403 only when an alternative
+  authenticated without the scope), with a challenge matching the route's schemes.
+- In production: 501 for handlers that still return mocks, docs off unless
+  `DOCS_ENABLED`, an explicit non-SQLite `DATABASE_URL` with `--db`, HS256 to HS512 only.
+- New settings `DOCS_ENABLED`, `MAX_BODY_BYTES`, `JWT_ISSUER`, `JWT_LEEWAY_SECONDS`,
+  `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_STATEMENT_TIMEOUT_MS`; tokens accept `scope`,
+  `scp` or `scopes`. Alembic reads only the database settings.
+- JSON error bodies that never echo input or SQL (409, 413, 422 without `input`, a bare
+  500) and security headers on every response (`app/generated/middleware.py`).
+- `--db` paging defaults and bounds, and a PUT that keeps the id and read-only columns.
+- `uv.lock` is used when committed (`uv sync --locked` in the Dockerfile and CI).
+- Default-only operations answer 200 with the default body; number and boolean enums in
+  parameters accept their text (`app/generated/wire.py`).
+- The formatter's ruff calls time out after 120 s.
 
 [Unreleased]: https://github.com/euron-sde-team/euron-open-apiforge/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/euron-sde-team/euron-open-apiforge/releases/tag/v0.1.0

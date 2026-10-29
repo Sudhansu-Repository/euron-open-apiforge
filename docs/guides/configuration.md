@@ -73,7 +73,8 @@ key, and the app never calls KMS itself. Archive retention is a bucket lifecycle
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `MAX_BODY_BYTES` | `25000000` | Any request body over this is refused with 413 `payload_too_large` (chunked bodies are counted as they arrive) |
+| `MAX_BODY_BYTES` | `8388608` (8 MiB), at least 1024 | The body limit of the three routes that take a spec: `POST /api/v1/lint`, `POST /api/v1/projects/{slug}/specs` and `POST .../specs/text`. Over it, 413 `payload_too_large` (chunked bodies are counted as they arrive) |
+| `MAX_SMALL_BODY_BYTES` | `65536` (64 KiB), at least 1024 | The body limit of every other route, sign-in included. A larger body is refused with 413 before it is parsed |
 | `MAX_SPEC_BYTES` | `5242880` (5 MiB), at least 1024 | A spec over this is refused with 413 `spec_too_large`, whether uploaded as a file, sent as text (`POST .../specs/text`) or linted in the playground (`POST /api/v1/lint`); the message names `MAX_SPEC_BYTES`. The generator's own per-document limit is also 5 MiB, so raising this does not let a single document past 5 MiB; it can let a larger zip bundle through (up to the generator's 20 MiB bundle limit) |
 
 ## Worker and generations
@@ -90,7 +91,7 @@ key, and the app never calls KMS itself. Archive retention is a bucket lifecycle
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `METRICS_TOKEN` | unset | When set, the API's `/metrics` requires `Authorization: Bearer <token>`. Always set on a public deployment |
+| `METRICS_TOKEN` | unset | When set, the API's `/metrics` requires `Authorization: Bearer <token>`. Required in production (the guard refuses to boot without it) |
 | `OTEL_ENABLED` | `false` | Install the OpenTelemetry SDK with an OTLP exporter. Configure it with the standard `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_SERVICE_NAME` |
 
 ## Process and CLI variables
@@ -102,7 +103,8 @@ Read by `apiforge-server` itself, outside `Settings`:
 | `PORT` | `4630` | `serve` | Listening port (`--port` overrides it; Compose and ECS use 8080 inside the container) |
 | `WEB_CONCURRENCY` | `1` | `serve` | uvicorn worker processes. Keep 1 and scale with more containers, so Prometheus counters and in-process caches stay exact |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | `serve` | Addresses whose `X-Forwarded-For` is trusted (the load balancer's network; the VPC CIDR on AWS). Never `*` on a host reachable without a proxy |
-| `APIFORGE_OWNER_PASSWORD` | prompt | `create-owner` | The owner's password, instead of an interactive prompt |
+| `APIFORGE_OWNER_PASSWORD` | prompt | `create-owner`, `hash-password` | The owner's password, instead of an interactive prompt |
+| `APIFORGE_OWNER_PASSWORD_HASH` | unset | `create-owner` | An argon2id hash from `hash-password`, used instead of a password (what `make aws-admin` sends to the one-off task); a hash that is not argon2id is refused |
 | `DEMO_PASSWORD` (or `AF_DEMO_PASSWORD`) | required | `seed-demo` | Password of the three demo users. `seed-demo` refuses `ENVIRONMENT=production` |
 
 `bench.py` reads `API_URL` (`http://localhost:4630`), `BENCH_EMAIL`
@@ -158,17 +160,26 @@ bearer, OAuth2 or OpenID Connect scheme, `API_KEYS` with an API key scheme,
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `APP_ENV` | `development` | `development`, `test` or `production`. Production refuses the unsafe values listed below |
+| `APP_ENV` | `development` | `development`, `test` or `production`. Production refuses the unsafe values listed below, answers 501 for operations whose handler still returns the mock, and turns the docs off |
 | `CORS_ORIGINS` | `[]` | JSON list of browser origins allowed to call the API (`["https://app.example.com"]`). Empty adds no CORS middleware; `*` is refused in production |
-| `JWT_SECRET` | empty | HS256 secret that verifies bearer tokens. Empty accepts no token (fail closed). At least 32 characters in production |
-| `JWT_ALGORITHM` | `HS256` | Algorithm passed to PyJWT |
+| `DOCS_ENABLED` | unset | `/docs`, `/redoc` and `/openapi.json`: on outside production, off in production unless `true` |
+| `MAX_BODY_BYTES` | `10485760` (10 MiB) | Largest request body; over it, 413. Chunked bodies are counted as they arrive. `0` turns the limit off |
+| `JWT_SECRET` | empty | Secret that verifies bearer tokens. Empty accepts no token (fail closed). At least 32 characters in production. Tokens are verified with this secret, not with fetched keys (JWKS is on the roadmap) |
+| `JWT_ALGORITHM` | `HS256` | `HS256`, `HS384` or `HS512`; anything else is refused |
 | `JWT_AUDIENCE` | unset | When set, tokens must carry this `aud` |
+| `JWT_ISSUER` | unset | When set, tokens must carry an `iss` claim equal to it |
+| `JWT_LEEWAY_SECONDS` | `30` | Clock skew allowed on `exp` and `nbf` |
 | `API_KEYS` | `[]` | JSON list of accepted API keys (`["key-one", "key-two"]`), compared in constant time. Each at least 24 characters in production |
 | `BASIC_USERS` | `{}` | JSON object of HTTP basic users and passwords (`{"admin": "a-long-password"}`). Each password at least 16 characters in production |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./app.db` | SQLAlchemy async URL; the generated Compose file sets a Postgres URL |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./app.db` | SQLAlchemy async URL; the generated Compose file sets a Postgres URL. In production it must be set explicitly and not be SQLite |
+| `DB_POOL_SIZE` | `5` | Connections kept in the pool (Postgres; SQLite ignores the pool settings) |
+| `DB_MAX_OVERFLOW` | `10` | Extra connections under load |
+| `DB_STATEMENT_TIMEOUT_MS` | `30000` | Postgres `statement_timeout` per connection; `0` turns it off |
 
-Tokens must carry `sub` and `exp`; scopes are read from a space-separated `scope` claim or
-a `scopes` list. How to change any of this is in
+The database settings (`DATABASE_URL` and the `DB_*` ones) live in a separate
+`DatabaseSettings` class, which is all Alembic reads: migrations run without the app's
+secrets. Tokens must carry `sub` and `exp`; scopes are read from a space-separated `scope`
+claim, an `scp` claim (a list or a string) or a `scopes` list. How to change any of this is in
 [generated-project.md](generated-project.md#authentication).
 
 ## Production boot guards
@@ -184,7 +195,11 @@ skips the guards):
 | `APIFORGE_CLOUD=aws` with `AWS_ENDPOINT_URL` set | `AWS_ENDPOINT_URL must be unset when APIFORGE_CLOUD=aws` |
 | `COOKIE_SECURE=false` | `COOKIE_SECURE must be true in production` |
 | `STORAGE=local` | `STORAGE must be s3 in production (local disk is per container)` |
+| `CORS_ORIGINS` contains `*` or an origin that is not `https://` (credentialed CORS to such an origin would defeat the CSRF header) | `CORS_ORIGINS must list https:// origins only, never * (got ...)` |
+| `DATABASE_URL` is the default or points at `localhost` | `DATABASE_URL must point at the production database` |
+| `METRICS_TOKEN` is unset | `METRICS_TOKEN must be set: /metrics lists project names` |
 
 All problems are reported at once, in one `unsafe production configuration: ...` error.
 The AWS environments set `ENVIRONMENT=production`, `STORAGE=s3`, `COOKIE_SECURE=true` and
-generate both secrets; the local stack runs with `ENVIRONMENT=development`.
+`CORS_ORIGINS` to the https deployment URL, and generate both secrets, the metrics token
+and `DATABASE_URL`; the local stack runs with `ENVIRONMENT=development`.

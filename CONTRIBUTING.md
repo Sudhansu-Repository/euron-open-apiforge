@@ -156,7 +156,10 @@ user can do.
 temporary folder and runs `apiforge verify` on it (`uv sync`, ruff, format check, mypy,
 pytest). With `CORPUS_DATABASE_URL` set (`make test-corpus` sets it to a `generated_test`
 database it creates), every `--db` project runs its tests a second time on Postgres. A
-failing step fails the test with that step's output. Run it with
+failing step fails the test with that step's output. `tests/test_hardening.py` adds one
+more corpus test: it generates the team-tasks spec, appends runtime checks to that
+project's own tests and runs them in the live app; when you fix how generated apps behave,
+add a source check there and, if it needs a running app, a runtime check. Run it with
 `make test-corpus` whenever you touch the generator, a template or the corpus. To add a
 spec, drop it in `corpus/` (a realistic API that exercises something the others do not),
 add its features to `EXAMPLE_FEATURES` in `apps/api/src/apiforge_server/projects/service.py`,

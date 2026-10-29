@@ -1,7 +1,7 @@
 # Testing
 
 APIForge has several layers of automated checks, and each proves something different. At
-0.1.0 there are 75 generator unit tests, 12 corpus projects, 51 API unit tests, 57
+0.1.0 there are 85 generator unit tests, 15 corpus tests, 55 API unit tests, 61
 integration tests (run under 4 backend combinations), 43 web tests, 17 browser end to end
 tests and a QA sweep of 88 pages; the README's Testing table keeps the current counts. This guide describes what each gate covers and how to run it.
 
@@ -12,7 +12,7 @@ tests and a QA sweep of 88 pages; the README's Testing table keeps the current c
 | Unit | `make test` | uv, pnpm | Pure logic with no database and no network: the generator (pytest, Hypothesis), the API (pytest) and the web app (Vitest) |
 | Integration | `make test-integration` | Docker | The real API and worker code in-process against real Postgres and Redis |
 | Option matrix | `make test-matrix` | `make up` (Floci) | The integration suite under every cache and storage backend (4 runs) |
-| Corpus | `make test-corpus` | uv, the package index or a warm uv cache, Docker (Postgres) | Every bundled spec, with and without `--db`, the hostile spec and a 240-operation spec, generated into a real project whose own gates pass; every `--db` project's tests run again on Postgres |
+| Corpus | `make test-corpus` | uv, the package index or a warm uv cache, Docker (Postgres) | Every bundled spec, with and without `--db`, the hostile spec and a 240-operation spec, generated into a real project whose own gates pass; every `--db` project's tests run again on Postgres; plus a runtime test of the generated team-tasks app (`tests/test_hardening.py`) |
 | Browser e2e | `make e2e` | `make up && make demo` | User journeys through the real web app, API and worker (Playwright, Chromium) |
 | Browser QA | `make qa` | `make up && make demo` | Every page in light and dark, desktop and phone width, with no console errors, failed requests, broken images, error states or horizontal overflow (Puppeteer) |
 | Sanitization | `make sanitize` | bash, git | No credentials, cloud identifiers, committed env files or em/en dashes in the tree |
@@ -73,6 +73,7 @@ Runs `uv run pytest -q` in `apps/forge` (the corpus is excluded by the default
 | `apps/forge/tests/test_generator.py` | Byte-identical output for the same input, options changing the output and recorded in the lock, every file owned and handlers yours, the report gate, generating with sockets blocked, the CLI (`lint`, `generate`, `--zip`, `diff`, `examples`, folders and zips with relative refs) |
 | `apps/forge/tests/test_hostile.py` | A spec built to break out of identifiers, strings, docstrings and comments generates inert code; property tests over arbitrary text for literals, docstrings and identifiers |
 | `apps/forge/tests/test_writer.py` | Regeneration after spec changes keeps every line you wrote; a hand-edited generated file is never overwritten silently; a generated file no longer produced is removed; a hostile lock file cannot delete outside the generated folders |
+| `apps/forge/tests/test_hardening.py` | What a generated app must get right, checked in the generated source: AND and OR security requirements, an unsupported scheme failing closed and staying in the report, an unsupported alternative not opening the route, scopes decided in `require()`, paging with missing values and bounded offsets, PUT keeping columns outside the input model, integer enum parameters, default-only operations, the Dockerfile and CI using `uv.lock`, the production guards in the user-owned settings. Its corpus test runs the same fixes in a live team-tasks app |
 | `apps/forge/tests/test_budgets.py` | The `$ref` expansion budget: a self-referencing fan-out under 1 KB is refused fast with `spec_too_complex`; a modest fan-out still generates |
 | `apps/api/tests/unit/core/` | Settings and the production boot guards, Redis being optional, defaults that send nothing anywhere, worker bounds, the KV store and the config cache (single flight, cross-instance invalidation, TTL, the invalidation race, byte bounds), cursors, emails, the error envelope, JSON logs with redaction, API keys, passwords and sessions, local storage (path traversal) |
 | `apps/api/tests/unit/generations/test_archive_cache.py` | The archive file cache: least recently used first over the count bound, the byte bound always keeping the newest entry, the same archive never counted twice, ETags for an archive and one file |
@@ -137,7 +138,14 @@ generates a project into a temporary folder and runs `apiforge verify` on it: `u
 `ruff check`, `ruff format --check`, `mypy app tests` and `pytest`. A failing step fails the
 test with that step's output. This is the proof behind acceptance criteria 1, 2, 3, 4, 7,
 11 and 12: the generated tests check those claims, so the generated suite passing is the
-claim holding.
+claim holding. That is 14 cases (six specs with and without `--db`, the hostile spec and
+the 240-operation spec). The fifteenth corpus test, in `tests/test_hardening.py`, generates
+the team-tasks spec with `--db`, adds runtime checks to its test suite (an unsupported
+scheme refusing every request, AND requirements, scopes across alternatives, the Basic
+challenge, paging and huge offsets, integer enum queries, PUT keeping read-only fields, a
+409 without SQL, validation errors without input, a bare JSON 500, 501 and the docs switch
+in production, security headers, chunked bodies over the limit, `scp`, `iss` and leeway in
+tokens) and runs its gates, on Postgres too when `CORPUS_DATABASE_URL` is set.
 
 `make test-corpus` first makes sure the Compose Postgres is up and a `generated_test`
 database exists, and sets `CORPUS_DATABASE_URL`. With it set, each `--db` project runs its

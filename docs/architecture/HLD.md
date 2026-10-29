@@ -84,8 +84,8 @@ servers or `$ref` URLs. Its only network peers are Postgres, Redis (optional) an
 ## Containers
 
 The API image runs the HTTP API (`apiforge-server serve`), the background worker
-(`apiforge-server worker`) and one-off commands (`migrate`, `create-owner`, `seed-demo`,
-`openapi`). It carries both Python packages: the generator (`apps/forge`, import
+(`apiforge-server worker`) and one-off commands (`migrate`, `create-owner`, `hash-password`,
+`seed-demo`, `openapi`). It carries both Python packages: the generator (`apps/forge`, import
 `apiforge`) and the service (`apps/api`, import `apiforge_server`). The web image runs the
 Next.js app.
 
@@ -272,7 +272,13 @@ at all), so every behaviour above is also proven on the in-process backend.
 - **Generation is CPU work in the worker, not the API.** Rendering plus the pinned ruff
   formatter run in the worker, up to `WORKER_CONCURRENCY` (2) generations at once, each in
   its own thread. Add worker replicas for
-  throughput: `FOR UPDATE SKIP LOCKED` hands each queued row to exactly one of them.
+  throughput: `FOR UPDATE SKIP LOCKED` hands each queued row to exactly one of them. On
+  AWS the worker service autoscales on CPU between `worker_count` and `worker_max_count`
+  (1 to 4 in aws-prod, fixed in aws-dev).
+- **Connection pools are sized for a deploy at full scale.** In aws-prod,
+  (2 x 8 api + 2 x 4 worker + 1 migrate) x (`DB_POOL_SIZE` 5 + `DB_MAX_OVERFLOW` 10) =
+  375 connections, under the 400 the database allows, even while old and new tasks
+  overlap during a rollout.
 - **Lists are bounded.** Project lists are four queries regardless of the number of
   projects (counts and latest spec and generation in batched queries); generation lists
   take `limit` (50, at most 200); the audit log is keyset-paginated on its id.
@@ -316,8 +322,12 @@ Details in [security.md](security.md) and [threat-model.md](threat-model.md).
 - Web app sessions are signed tokens in an httpOnly cookie; sign-out and password changes
   are enforced in Postgres. Cookie mutations need `X-APIForge-CSRF: 1`. Roles: owner,
   admin, viewer. API keys (`afk_`) are read-only and stored as a peppered HMAC.
+- Request bodies are capped before parsing: 8 MiB on the three spec routes, 64 KiB on every
+  other route. Sign-in lockout is per account and client address (5 failures), with an
+  account-wide lock only at 50.
 - The audit log is append-only at the database level. Production refuses to boot with demo
-  secrets, insecure cookies, local storage or an endpoint override on AWS.
+  secrets, insecure cookies, local storage, an endpoint override on AWS, non-https CORS
+  origins, a default or localhost database URL, or no metrics token.
 
 ## Observability
 
@@ -335,7 +345,10 @@ Details in [security.md](security.md) and [threat-model.md](threat-model.md).
   reported).
 - **Tracing:** OpenTelemetry hooks, off until `OTEL_ENABLED=true`.
 - **AWS:** CloudWatch logs, a dashboard and alarms (5xx, p95 latency, unhealthy targets,
-  ECS, RDS, cache memory, the generation loop itself failing, and every failed generation).
+  ECS, RDS, cache memory, the generation loop itself failing, and every failed generation),
+  plus a `<service>-not-running` alarm per ECS service that fires when CPU samples stop
+  (missing data counts as breaching). aws-prod warns at plan time when `alarm_email` is
+  unset.
 
 ## Key design decisions
 
