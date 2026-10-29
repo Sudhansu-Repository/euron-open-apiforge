@@ -20,6 +20,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 INSECURE_SECRETS = {"", "change-me", "replace-with-output-of-make-env", "dev", "secret"}
 
 
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://apiforge:apiforge@localhost:4642/apiforge"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, extra="ignore", case_sensitive=False)
 
@@ -27,7 +30,7 @@ class Settings(BaseSettings):
     cloud: Literal["local", "floci", "aws"] = Field("local", alias="APIFORGE_CLOUD")
     log_level: str = "INFO"
 
-    database_url: str = "postgresql+asyncpg://apiforge:apiforge@localhost:4642/apiforge"
+    database_url: str = DEFAULT_DATABASE_URL
     db_pool_size: int = 10
     db_max_overflow: int = 20
     # Empty: no Redis. Rate limits, the lint cache and config invalidation run in process.
@@ -49,7 +52,10 @@ class Settings(BaseSettings):
     storage: Literal["local", "s3"] = "local"
     local_storage_dir: str = "./.data/artifacts"
 
-    max_body_bytes: int = 25_000_000
+    # Spec uploads and the playground: room for a MAX_SPEC_BYTES spec as JSON text or a
+    # multipart file. Every other route is held to max_small_body_bytes.
+    max_body_bytes: int = Field(8 * 1024 * 1024, ge=1024)
+    max_small_body_bytes: int = Field(64 * 1024, ge=1024)
     default_rpm_limit: int = 600
     # Spec uploads: one file, or a zip with relative $refs (see apiforge.loader limits).
     max_spec_bytes: int = Field(5 * 1024 * 1024, ge=1024)
@@ -94,6 +100,19 @@ class Settings(BaseSettings):
             problems.append("COOKIE_SECURE must be true in production")
         if self.storage == "local":
             problems.append("STORAGE must be s3 in production (local disk is per container)")
+        # Credentialed CORS: a wildcard would let any site act with a signed-in user's
+        # cookie, and the CSRF header is in allow_headers, so it would not stop that.
+        bad_origins = [o for o in self.cors_origins if o == "*" or not o.startswith("https://")]
+        if bad_origins:
+            problems.append(
+                "CORS_ORIGINS must list https:// origins only, never * (got "
+                + ", ".join(bad_origins)
+                + ")"
+            )
+        if "@localhost" in self.database_url or self.database_url == DEFAULT_DATABASE_URL:
+            problems.append("DATABASE_URL must point at the production database")
+        if not self.metrics_token:
+            problems.append("METRICS_TOKEN must be set: /metrics lists project names")
         if problems:
             raise RuntimeError("unsafe production configuration: " + "; ".join(problems))
 

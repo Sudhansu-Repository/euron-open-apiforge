@@ -44,7 +44,26 @@ async def test_chunked_bodies_obey_the_body_limit(api: Api) -> None:
         )
         assert r.status_code == 413 and r.json()["error"]["code"] == "payload_too_large"
     finally:
-        settings.max_body_bytes = 25_000_000
+        settings.max_body_bytes = 8 * 1024 * 1024
+
+
+async def test_routes_other_than_spec_uploads_take_only_small_bodies(api: Api) -> None:
+    # 200 KB is fine for a spec upload but refused, unparsed, on sign-in and the rest.
+    big = b'{"email": "a@example.test", "password": "' + b"x" * 200_000 + b'"}'
+    async with api.anonymous() as c:
+        r = await c.post(
+            "/api/v1/auth/login", content=big, headers={"content-type": "application/json"}
+        )
+    assert r.status_code == 413 and r.json()["error"]["code"] == "payload_too_large"
+    r = await api.client.post(
+        "/api/v1/projects", content=big, headers={"content-type": "application/json"}
+    )
+    assert r.status_code == 413
+    text = '{"content": "' + "x" * 200_000 + '"}'
+    r = await api.client.post(
+        "/api/v1/lint", content=text, headers={"content-type": "application/json"}
+    )
+    assert r.status_code != 413  # a spec route: parsed, and refused for its content instead
 
 
 async def test_a_spec_with_url_refs_never_makes_the_server_fetch(

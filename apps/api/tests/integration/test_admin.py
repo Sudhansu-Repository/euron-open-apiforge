@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from sqlalchemy import text
 
@@ -180,3 +181,19 @@ async def test_metrics_token_protects_the_metrics(api: Api) -> None:
             assert ok.status_code == 200
     finally:
         api.container.settings.metrics_token = None
+
+
+async def test_failures_from_one_address_do_not_lock_the_account_for_others(api: Api) -> None:
+    def client(ip: str) -> httpx.AsyncClient:
+        transport = httpx.ASGITransport(app=api.app, client=(ip, 50000))
+        return httpx.AsyncClient(transport=transport, base_url="http://testserver")
+
+    async with client("198.51.100.7") as attacker, client("203.0.113.9") as owner:
+        for _ in range(6):
+            await attacker.post(
+                "/api/v1/auth/login", json={"email": OWNER["email"], "password": "wrong"}
+            )
+        locked = await attacker.post("/api/v1/auth/login", json=OWNER)
+        assert locked.json()["error"]["code"] == "account_locked"
+        # The real owner, elsewhere, still gets in.
+        assert (await owner.post("/api/v1/auth/login", json=OWNER)).status_code == 200

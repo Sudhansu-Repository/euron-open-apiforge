@@ -58,13 +58,35 @@ async def test_cli_creates_and_resets_an_owner(api: Api, monkeypatch: pytest.Mon
 
     get_settings.cache_clear()
     try:
-        await cli._create_owner("second@example.test", "Second", "Fresh-Owner-Pass-1")
-        await cli._create_owner("second@example.test", "Second", "Fresh-Owner-Pass-2")
+        await cli._create_owner(
+            "second@example.test", "Second", cli._checked_hash("Fresh-Owner-Pass-1")
+        )
+        await cli._create_owner(
+            "second@example.test", "Second", cli._checked_hash("Fresh-Owner-Pass-2")
+        )
     finally:
         get_settings.cache_clear()
     async with api.container.db.sessionmaker() as session:
         owners = (await session.scalars(select(User).where(User.role == "owner"))).all()
     assert {u.email for u in owners} == {"owner@example.test", "second@example.test"}
+
+
+def test_hash_password_prints_an_argon2id_hash_that_verifies(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from apiforge_server.core.security import verify_password
+
+    monkeypatch.setenv("APIFORGE_OWNER_PASSWORD", "Cloud-Owner-Pass-9")
+    cli.main(["hash-password"])
+    printed = capsys.readouterr().out.strip()
+    assert printed.startswith("$argon2id$") and "Cloud-Owner-Pass-9" not in printed
+    assert verify_password("Cloud-Owner-Pass-9", printed)
+
+
+def test_create_owner_refuses_a_hash_that_is_not_argon2id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APIFORGE_OWNER_PASSWORD_HASH", "plaintext-password")
+    with pytest.raises(SystemExit, match="argon2id"):
+        cli.main(["create-owner", "--email", "x@example.test"])
 
 
 async def test_the_demo_seed_fills_every_screen_and_is_idempotent(

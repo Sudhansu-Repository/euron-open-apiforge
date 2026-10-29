@@ -61,6 +61,12 @@ EXAMPLE_FEATURES = {
     "inventory.yaml": ["CRUD with --db", "UUID ids", "PATCH", "paging and filters"],
     "secure-notes.yaml": ["every security scheme", "optional auth", "scopes", "API key in cookie"],
     "edge-cases.yaml": ["the lint report", "deepObject", "callbacks", "webhooks", "XML alternates"],
+    "team-tasks.yaml": [
+        "AND security requirements",
+        "an unsupported scheme refused",
+        "readOnly server fields with PUT",
+        "paging without defaults",
+    ],
 }
 
 

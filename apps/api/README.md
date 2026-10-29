@@ -9,7 +9,7 @@ byte-identical to the `apiforge` CLI's.
 
 ```bash
 uv sync
-uv run apiforge-server --help       # serve, worker, migrate, revision, openapi, create-owner, seed-demo
+uv run apiforge-server --help       # serve, worker, migrate, revision, openapi, create-owner, hash-password, seed-demo
 uv run pytest tests/unit            # no database, no network
 make -C ../.. test-integration      # real Postgres and Redis (started if needed)
 ```
@@ -21,7 +21,8 @@ make -C ../.. test-integration      # real Postgres and Redis (started if needed
 | `apiforge-server migrate` | Apply the Alembic migrations |
 | `apiforge-server revision -m "..."` | Autogenerate a migration against a migrated database (`make migration`) |
 | `apiforge-server openapi` | Print the OpenAPI document (`make openapi` writes `docs/api/openapi.yaml`) |
-| `apiforge-server create-owner --email ... [--name ...]` | Create an owner, or reset a user to owner with a new password (`APIFORGE_OWNER_PASSWORD` or a prompt) |
+| `apiforge-server create-owner --email ... [--name ...]` | Create an owner, or reset a user to owner with a new password: `APIFORGE_OWNER_PASSWORD_HASH` (an argon2id hash from `hash-password`; anything else is refused), else `APIFORGE_OWNER_PASSWORD`, else a prompt |
+| `apiforge-server hash-password` | Print the argon2id hash of `APIFORGE_OWNER_PASSWORD` (or a prompted password), checked against the password policy. `scripts/aws-run-task.sh` runs it locally so an ECS task override carries only the hash |
 | `apiforge-server seed-demo` | Demo users, a read-only API key, projects from the bundled specs with spec history and real generations (`DEMO_PASSWORD`; idempotent). Refuses `ENVIRONMENT=production` |
 | `python -m apiforge_server.bench` | Lint, upload, generation and download latency against a running stack (`make bench`) |
 

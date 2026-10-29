@@ -12,6 +12,9 @@ def prod(**overrides: object) -> Settings:
         "api_key_pepper": "y" * 40,
         "cookie_secure": True,
         "storage": "s3",
+        "cors_origins": "https://apiforge.example.com",
+        "database_url": "postgresql+asyncpg://app:secret@db.internal:5432/apiforge",
+        "metrics_token": "z" * 40,
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]
@@ -37,6 +40,13 @@ def test_production_with_strong_secrets_boots() -> None:
         ),
         ({"cookie_secure": False}, "COOKIE_SECURE"),
         ({"storage": "local"}, "STORAGE"),
+        ({"cors_origins": "*"}, "CORS_ORIGINS"),
+        ({"cors_origins": "http://apiforge.example.com"}, "CORS_ORIGINS"),
+        (
+            {"database_url": "postgresql+asyncpg://apiforge:apiforge@localhost:4642/apiforge"},
+            "DATABASE_URL",
+        ),
+        ({"metrics_token": None}, "METRICS_TOKEN"),
     ],
 )
 def test_production_guards(overrides: dict[str, object], fragment: str) -> None:

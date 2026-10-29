@@ -51,15 +51,12 @@ def _revision(args: argparse.Namespace) -> None:
     revision(get_settings().database_url, args.message)
 
 
-async def _create_owner(email: str, name: str, password: str) -> None:
+async def _create_owner(email: str, name: str, password_hash: str) -> None:
     from sqlalchemy import func, select
 
     from apiforge_server.core.db import Database
-    from apiforge_server.core.security import hash_password, password_problems
     from apiforge_server.users.models import User
 
-    if problems := password_problems(password):
-        sys.exit("password needs " + ", ".join(problems))
     db = Database(get_settings().database_url, pool_size=1, max_overflow=0)
     try:
         async with db.sessionmaker() as session:
@@ -68,7 +65,7 @@ async def _create_owner(email: str, name: str, password: str) -> None:
             )
             if existing:
                 existing.role = "owner"
-                existing.password_hash = hash_password(password)
+                existing.password_hash = password_hash
                 existing.disabled = False
                 existing.session_version += 1
                 print(f"updated {email} (owner)")
@@ -78,7 +75,7 @@ async def _create_owner(email: str, name: str, password: str) -> None:
                         email=email.lower(),
                         name=name,
                         role="owner",
-                        password_hash=hash_password(password),
+                        password_hash=password_hash,
                     )
                 )
                 print(f"created {email} (owner)")
@@ -87,9 +84,31 @@ async def _create_owner(email: str, name: str, password: str) -> None:
         await db.dispose()
 
 
+def _checked_hash(password: str) -> str:
+    from apiforge_server.core.security import hash_password, password_problems
+
+    if problems := password_problems(password):
+        sys.exit("password needs " + ", ".join(problems))
+    return hash_password(password)
+
+
 def _owner(args: argparse.Namespace) -> None:
+    # A one-off cloud task gets only the hash (APIFORGE_OWNER_PASSWORD_HASH, made locally
+    # by `hash-password`): task overrides are visible to anyone who can describe the task.
+    given_hash = os.environ.get("APIFORGE_OWNER_PASSWORD_HASH", "")
+    if given_hash:
+        if not given_hash.startswith("$argon2id$"):
+            sys.exit("APIFORGE_OWNER_PASSWORD_HASH must be an argon2id hash from `hash-password`")
+        password_hash = given_hash
+    else:
+        password = os.environ.get("APIFORGE_OWNER_PASSWORD") or getpass.getpass("Password: ")
+        password_hash = _checked_hash(password)
+    asyncio.run(_create_owner(args.email, args.name, password_hash))
+
+
+def _hash(_: argparse.Namespace) -> None:
     password = os.environ.get("APIFORGE_OWNER_PASSWORD") or getpass.getpass("Password: ")
-    asyncio.run(_create_owner(args.email, args.name, password))
+    sys.stdout.write(_checked_hash(password) + "\n")
 
 
 def _seed(args: argparse.Namespace) -> None:
@@ -136,6 +155,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--email", required=True)
     p.add_argument("--name", default="Owner")
     p.set_defaults(fn=_owner)
+    sub.add_parser(
+        "hash-password",
+        help="print the argon2id hash of APIFORGE_OWNER_PASSWORD (or a prompted password)",
+    ).set_defaults(fn=_hash)
 
     sub.add_parser(
         "seed-demo",

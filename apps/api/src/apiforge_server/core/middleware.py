@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 import time
 
@@ -71,6 +72,10 @@ class RequestContextMiddleware:
 
 
 _BODY_METHODS = {"POST", "PUT", "PATCH"}
+# Only spec uploads and the playground carry large bodies; every other route (sign-in
+# included) is held to MAX_SMALL_BODY_BYTES, so an anonymous client cannot make the API
+# buffer and parse megabytes before authentication.
+_LARGE_BODY_PATHS = re.compile(r"^/api/v1/(?:lint|projects/[^/]+/specs(?:/text)?)/?$")
 
 
 class BodySizeLimitMiddleware:
@@ -92,10 +97,11 @@ class BodySizeLimitMiddleware:
         if scope["type"] != "http" or scope.get("method") not in _BODY_METHODS:
             await self.app(scope, receive, send)
             return
-        limit = self.settings.max_body_bytes
+        spec_route = bool(_LARGE_BODY_PATHS.match(scope.get("path", "")))
+        limit = self.settings.max_body_bytes if spec_route else self.settings.max_small_body_bytes
         length = dict(scope.get("headers") or []).get(b"content-length", b"")
         if length.isdigit() and int(length) > limit:
-            await self._refuse(send, limit)
+            await self._refuse(send, limit, spec_route)
             return
         chunks: list[bytes] = []
         size = 0
@@ -106,15 +112,16 @@ class BodySizeLimitMiddleware:
             body = message.get("body", b"")
             size += len(body)
             if size > limit:
-                await self._refuse(send, limit)
+                await self._refuse(send, limit, spec_route)
                 return
             chunks.append(body)
             if not message.get("more_body", False):
                 break
+        whole = b"".join(chunks)
         content_type = dict(scope.get("headers") or []).get(b"content-type", b"")
         if b"json" in content_type and size:
             try:
-                orjson.loads(b"".join(chunks))
+                orjson.loads(whole)
             except orjson.JSONDecodeError as exc:
                 await self._invalid_json(send, str(exc))
                 return
@@ -124,7 +131,7 @@ class BodySizeLimitMiddleware:
             nonlocal replayed
             if not replayed:
                 replayed = True
-                return {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+                return {"type": "http.request", "body": whole, "more_body": False}
             return await receive()  # after the body: wait for a disconnect
 
         await self.app(scope, replay, send)
@@ -157,14 +164,18 @@ class BodySizeLimitMiddleware:
         )
         await send({"type": "http.response.body", "body": body})
 
-    async def _refuse(self, send: Send, limit: int) -> None:
+    async def _refuse(self, send: Send, limit: int, spec_route: bool) -> None:
+        advice = (
+            "Upload a smaller spec (a zip compresses well), or raise MAX_BODY_BYTES"
+            if spec_route
+            else "Only spec uploads take large bodies (MAX_SMALL_BODY_BYTES)"
+        )
         body = json.dumps(
             {
                 "error": {
                     "code": "payload_too_large",
                     "type": "invalid_request_error",
-                    "message": f"The request body is larger than {limit:,} bytes. Upload "
-                    "a smaller spec (a zip compresses well), or raise MAX_BODY_BYTES",
+                    "message": f"The request body is larger than {limit:,} bytes. {advice}",
                     "details": {"limit_bytes": limit},
                 }
             }
