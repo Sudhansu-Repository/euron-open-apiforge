@@ -17,6 +17,10 @@ from app.db import session_scope
 from app.generated import db_models
 from app.generated.models import {{ resources|map(attribute="model")|unique|sort|join(", ") }}
 
+DEFAULT_LIMIT = 100
+MAX_LIMIT = 1000
+MAX_OFFSET = 2**63 - 1  # the largest OFFSET SQLite and Postgres accept
+
 class Repository[M: BaseModel]:
     """Create, read, update, delete and list one resource."""
 
@@ -44,13 +48,29 @@ class Repository[M: BaseModel]:
         return values
 
     async def list(
-        self, *, limit: int = 100, offset: int = 0, filters: dict[str, Any] | None = None
+        self,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+        page: int | None = None,
+        page_size: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[M]:
+        """One page, ordered by id. A paging argument the request left out (None) takes its
+        default: 100 rows (at most 1000) from the start, or page 1 of ``page_size`` rows."""
+        if page_size is not None:
+            limit = page_size
+        limit = min(max(limit if limit is not None else DEFAULT_LIMIT, 1), MAX_LIMIT)
+        if page is not None:
+            offset = (max(page, 1) - 1) * limit
+        offset = max(offset or 0, 0)
+        if offset > MAX_OFFSET:
+            return []  # past any row a 64-bit OFFSET can reach, so certainly past the end
         stmt = select(self.row)
         for key, value in (filters or {}).items():
             if value is not None and key in self.columns and key not in self.json_fields:
                 stmt = stmt.where(getattr(self.row, key) == (value.value if isinstance(value, Enum) else value))
-        stmt = stmt.order_by(getattr(self.row, self.id_field)).limit(min(max(limit, 1), 1000)).offset(max(offset, 0))
+        stmt = stmt.order_by(getattr(self.row, self.id_field)).limit(limit).offset(offset)
         async with session_scope() as session:
             rows = (await session.scalars(stmt)).all()
             return [self._to_model(r) for r in rows]
@@ -83,11 +103,10 @@ class Repository[M: BaseModel]:
             row = await session.get(self.row, item_id)
             if row is None:
                 return None
+            # A replace writes every field of the request model (its defaults included) and
+            # nothing else: columns the input cannot carry (the id, read-only fields the
+            # server manages) keep their stored values.
             values = self._values(data, partial=partial)
-            if not partial:
-                for key in self.columns:
-                    if key != self.id_field and key not in values:
-                        values[key] = None
             for key, value in values.items():
                 setattr(row, key, value)
             await session.flush()

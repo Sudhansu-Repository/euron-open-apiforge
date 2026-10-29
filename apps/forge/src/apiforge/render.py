@@ -16,6 +16,9 @@ from jinja2.sandbox import SandboxedEnvironment
 from apiforge.naming import comment, docstring, first_line, py_literal
 
 Owner = Literal["generated", "user"]
+# Formatting a large project takes seconds; a ruff that runs for minutes is hung, and
+# waiting forever would pin the generation worker's thread.
+RUFF_TIMEOUT_SECONDS = 120
 
 
 @dataclass
@@ -62,6 +65,26 @@ def ruff_binary() -> str:
     return os.fsdecode(find_ruff_bin())
 
 
+def _run_ruff(
+    args: list[str], *, env: dict[str, str], cwd: str
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(  # noqa: S603 the pinned ruff binary on files we just wrote
+            args,
+            env=env,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=RUFF_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Formatting the generated code took longer than {RUFF_TIMEOUT_SECONDS} s and "
+            "was stopped (ruff did not finish)."
+        ) from exc
+
+
 def format_python(files: list[GeneratedFile], line_length: int = 100) -> None:
     """Sort imports and format every Python file in place, with a pinned configuration so
     the output does not depend on the machine's ruff settings."""
@@ -83,53 +106,55 @@ def format_python(files: list[GeneratedFile], line_length: int = 100) -> None:
         base = [ruff, "--config", str(root / "ruff.toml")]
         # Import sorting only (F401 is reported for the project's own check, not fixed here,
         # so the handler modules keep their convenience imports).
-        subprocess.run(  # noqa: S603 the pinned ruff binary on files we just wrote
-            [
-                *base[:1],
-                "check",
-                "--config",
-                str(root / "ruff.toml"),
-                "--select",
-                "I",
-                "--fix",
-                "--quiet",
-                "--exit-zero",
-                str(root),
-            ],
-            check=True,
-            env=env,
-            capture_output=True,
-            cwd=tmp,
-        )
-        # Unused imports are removed only from the generated folders: which names a
-        # generated module needs depends on the spec (no models, no Field), while a handler
-        # module keeps its convenience imports for the code you will write.
-        generated = [str(root / d) for d in ("app/generated", "tests/generated")]
-        generated = [d for d in generated if Path(d).is_dir()]
-        if generated:
-            subprocess.run(  # noqa: S603 the pinned ruff binary on files we just wrote
+        checks = [
+            _run_ruff(
                 [
                     *base[:1],
                     "check",
                     "--config",
                     str(root / "ruff.toml"),
                     "--select",
-                    "F401",
+                    "I",
                     "--fix",
                     "--quiet",
                     "--exit-zero",
-                    *generated,
+                    str(root),
                 ],
-                check=True,
                 env=env,
-                capture_output=True,
                 cwd=tmp,
             )
-        result = subprocess.run(  # noqa: S603
+        ]
+        # Unused imports are removed only from the generated folders: which names a
+        # generated module needs depends on the spec (no models, no Field), while a handler
+        # module keeps its convenience imports for the code you will write.
+        generated = [str(root / d) for d in ("app/generated", "tests/generated")]
+        generated = [d for d in generated if Path(d).is_dir()]
+        if generated:
+            checks.append(
+                _run_ruff(
+                    [
+                        *base[:1],
+                        "check",
+                        "--config",
+                        str(root / "ruff.toml"),
+                        "--select",
+                        "F401",
+                        "--fix",
+                        "--quiet",
+                        "--exit-zero",
+                        *generated,
+                    ],
+                    env=env,
+                    cwd=tmp,
+                )
+            )
+        for check in checks:
+            if check.returncode != 0:
+                output = (check.stderr + check.stdout)[:2000]
+                raise RuntimeError(f"ruff check failed on the generated code.\n{output}")
+        result = _run_ruff(
             [*base[:1], "format", "--config", str(root / "ruff.toml"), str(root)],
             env=env,
-            capture_output=True,
-            text=True,
             cwd=tmp,
         )
         if result.returncode != 0:

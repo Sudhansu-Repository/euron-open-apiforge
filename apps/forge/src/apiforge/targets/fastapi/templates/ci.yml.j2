@@ -9,9 +9,18 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      # --locked installs exactly the committed uv.lock and fails when it is out of date.
+      # Until uv.lock is committed (uv sync writes it), dependencies are resolved fresh.
+      - name: Install
+        run: |
+          if [ -f uv.lock ]; then
+            uv sync --locked
+          else
+            echo "::warning::uv.lock is not committed; run uv sync and commit it to pin dependencies"
+            uv sync
+          fi
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy app tests

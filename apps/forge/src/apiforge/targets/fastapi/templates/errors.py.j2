@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -29,3 +30,53 @@ def api_error_response(error: ApiError) -> JSONResponse:
     else:
         content = jsonable_encoder(error.body)
     return JSONResponse(status_code=error.status_code, content=content, headers=error.headers)
+
+
+# Error details that are safe to return: the limits a value broke, never the value itself.
+SAFE_CONTEXT = {
+    "ge",
+    "gt",
+    "le",
+    "lt",
+    "multiple_of",
+    "min_length",
+    "max_length",
+    "pattern",
+    "expected",
+    "max_digits",
+    "decimal_places",
+}
+
+
+def validation_error_response(error: RequestValidationError) -> JSONResponse:
+    """422 with where and why each value failed, without echoing the values: a request's
+    input can hold passwords or tokens, and error bodies end up in logs and browsers."""
+    details: list[dict[str, Any]] = []
+    for item in error.errors():
+        detail: dict[str, Any] = {"loc": list(item.get("loc", ())), "msg": item.get("msg", ""), "type": item.get("type", "")}
+        ctx = {
+            k: v if isinstance(v, int | float | str | bool) else str(v)
+            for k, v in (item.get("ctx") or {}).items()
+            if k in SAFE_CONTEXT
+        }
+        if ctx:
+            detail["ctx"] = ctx
+        details.append(detail)
+    return JSONResponse(status_code=422, content={"detail": details})
+
+
+def internal_error_response() -> JSONResponse:
+    """500 without details; the traceback goes to the server log, not to the caller."""
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+{% if has_db %}
+
+
+def conflict_response() -> JSONResponse:
+    """409 for a write the database refused (a required value missing, a unique value
+    taken, a reference to a missing row). The database's message names tables and values,
+    so it stays in the server log."""
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "The request conflicts with the stored data: a required value is missing, a unique value is taken, or a referenced item does not exist."},
+    )
+{% endif %}

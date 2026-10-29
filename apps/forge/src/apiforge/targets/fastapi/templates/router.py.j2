@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter{% for n in fastapi_names %}, {{ n }}{% endfor %}
 
-{% if tag_views|selectattr("security_args")|list %}
+{% if tag_views|selectattr("op.security")|list %}
 from app.generated import security
 {% endif %}
 {% if uses_principal %}
@@ -31,8 +31,8 @@ async def {{ v.op.func }}(
     {{ p }},
 {% endfor %}
 ) -> {{ v.return_expr }}:
-{% if v.security_args %}
-    principal = security.require({{ v.security_args|join(", ") }})
+{% if v.require %}
+    principal = {{ v.require }}
 {% endif %}
 {% if v.result_mode == "model" %}
     return await handlers.{{ v.op.func }}({{ v.call_args|join(", ") }})

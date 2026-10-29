@@ -244,15 +244,21 @@ class Normalizer:
         params = self._params(shared, op.get("parameters") or [], file, ptr, func, path)
         body = self._body(op.get("requestBody"), file, f"{ptr}/requestBody", func)
         responses = self._responses(op.get("responses") or {}, file, f"{ptr}/responses", func)
+        accepted: list[str] = []
         if not any((r.code or 0) // 100 == 2 or r.status == "2XX" for r in responses):
+            if any(r.status == "default" for r in responses):
+                outcome = "200 with the default response's body"
+                # The served document lists that 200 next to the spec's default.
+                accepted.append("responses 200: served has")
+            else:
+                outcome = "200 with no body"
             self.report.warning(
                 "no_success_response",
-                f"{method.upper()} {path} documents no 2xx response; the handler returns 200 "
-                "with no body.",
+                f"{method.upper()} {path} documents no 2xx response; the handler returns "
+                f"{outcome}.",
                 f"{ptr}/responses",
             )
         security = self._security(op, ptr, schemes)
-        accepted: list[str] = []
         for p in params:
             if p.approximate:
                 accepted.append(f"parameter {p.wire} ({p.location}) schema")
@@ -686,7 +692,7 @@ class Normalizer:
                 self.report.error(
                     "security_scheme_unsupported",
                     f"Security scheme {wire!r} ({t} {s.get('scheme', '')}) is not supported; "
-                    "operations that require it are generated without it.",
+                    "a requirement that needs it never accepts a request (401).",
                     sptr,
                 )
         return out
@@ -700,6 +706,9 @@ class Normalizer:
         if requirement == []:
             return []
         known = {s.wire for s in schemes}
+        # Each requirement object is one alternative (OR); the schemes inside it are all
+        # needed (AND). A scheme APIForge cannot check stays in its alternative, so the
+        # target can refuse that alternative instead of dropping the requirement.
         alternatives: list[list[SecurityUse]] = []
         for alt in requirement:
             if not isinstance(alt, dict):
@@ -712,26 +721,15 @@ class Normalizer:
                     ptr,
                 )
                 return None
-            uses = [
-                SecurityUse(name, list(scopes or []))
-                for name, scopes in alt.items()
-                if name in known
-            ]
-            if len(uses) < len(alt):
+            uses = [SecurityUse(str(name), list(scopes or [])) for name, scopes in alt.items()]
+            if any(u.scheme not in known for u in uses):
                 self._dropped_security = True
-            if len(alt) > 1:
-                self.report.warning(
-                    "security_and_requirement",
-                    "A security requirement that combines several schemes (all of them) is "
-                    "enforced as 'any one of them'.",
-                    ptr,
-                )
-            alternatives.extend([[u] for u in uses])
-        unique: list[list[SecurityUse]] = []
-        for alt in alternatives:
-            if not any(a[0].scheme == alt[0].scheme for a in unique):
-                unique.append(alt)
-        return unique or None
+            key = sorted((u.scheme, sorted(u.scopes)) for u in uses)
+            if not any(
+                sorted((u.scheme, sorted(u.scopes)) for u in a) == key for a in alternatives
+            ):
+                alternatives.append(uses)
+        return alternatives or None
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -743,6 +741,10 @@ class Normalizer:
             if seen > 32:
                 raise RefError("A $ref chain loops.")
         return value, file
+
+
+def _requirement_key(uses: list[SecurityUse]) -> list[tuple[str, list[str]]]:
+    return sorted((u.scheme, sorted(u.scopes)) for u in uses)
 
 
 def _is_json(media: str) -> bool:

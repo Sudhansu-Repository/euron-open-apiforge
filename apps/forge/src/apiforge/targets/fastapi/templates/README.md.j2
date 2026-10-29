@@ -14,6 +14,10 @@ uv run uvicorn app.main:app --reload
 
 Open http://localhost:8000/docs for Swagger UI (or `/redoc`). `make check` runs everything
 CI runs: ruff, mypy and the tests.
+
+`uv sync` writes `uv.lock`, which pins every dependency: commit it. CI and the Docker image
+then install exactly that set (`uv sync --locked`) and fail when it is out of date; without
+it they still work but resolve the latest allowed versions.
 {% if options.docker %}
 
 With Docker: `docker compose up --build`.
@@ -50,8 +54,23 @@ apiforge generate --spec openapi.yaml --output .
 | Method | Path | Handler | Auth |
 | --- | --- | --- | --- |
 {% for v in views %}
-| {{ v.op.method|upper }} | `{{ v.op.path }}` | `app/handlers/{{ v.op.module }}.py: {{ v.op.func }}` | {{ v.op.security[0][0].scheme if v.security_args else "none" }} |
+| {{ v.op.method|upper }} | `{{ v.op.path }}` | `app/handlers/{{ v.op.module }}.py: {{ v.op.func }}` | {{ v.auth_label }} |
 {% endfor %}
+
+## In production
+
+With `APP_ENV=production` the app refuses to start with unsafe settings (short secrets,
+`CORS_ORIGINS=["*"]`{{ ", SQLite or no `DATABASE_URL`" if options.db else "" }}), turns off `/docs`, `/redoc` and
+`/openapi.json` unless `DOCS_ENABLED=true`, and answers 501 for every operation whose
+handler still returns example data. Every response carries security headers; request
+bodies over `MAX_BODY_BYTES` get 413; validation errors say where and why without echoing
+the input; unexpected errors answer a bare JSON 500{{ ", and database conflicts a 409" if options.db else "" }}.
+{% if has_bearer %}
+
+Bearer, OAuth2 and OpenID Connect tokens are JSON Web Tokens verified with `JWT_SECRET`
+(HS256, HS384 or HS512), not with keys fetched from the provider (JWKS); replace
+`_verify_jwt` in `app/auth.py` to use your identity provider's keys.
+{% endif %}
 
 ## Configuration
 
@@ -59,9 +78,12 @@ apiforge generate --spec openapi.yaml --output .
 | --- | --- |
 | `APP_ENV` | `development`, `test` or `production` (production refuses unsafe settings) |
 | `CORS_ORIGINS` | JSON list of browser origins allowed to call the API |
+| `DOCS_ENABLED` | Serve `/docs`, `/redoc` and `/openapi.json` (default: on, off in production) |
+| `MAX_BODY_BYTES` | Largest request body in bytes, 413 above it (10 MiB; 0 turns it off) |
 {% if has_bearer %}
 | `JWT_SECRET` | Secret that signs and verifies bearer tokens (at least 32 characters in production) |
-| `JWT_ALGORITHM`, `JWT_AUDIENCE` | Token algorithm (HS256) and optional audience |
+| `JWT_ALGORITHM`, `JWT_AUDIENCE`, `JWT_ISSUER` | Token algorithm (HS256, HS384 or HS512), optional audience and issuer |
+| `JWT_LEEWAY_SECONDS` | Clock skew allowed on `exp` and `nbf` (30) |
 {% endif %}
 {% if has_apikey %}
 | `API_KEYS` | JSON list of accepted API keys |
@@ -70,7 +92,8 @@ apiforge generate --spec openapi.yaml --output .
 | `BASIC_USERS` | JSON object of basic auth users and passwords |
 {% endif %}
 {% if options.db %}
-| `DATABASE_URL` | SQLAlchemy URL (SQLite by default, Postgres in Docker Compose) |
+| `DATABASE_URL` | SQLAlchemy URL (SQLite by default, Postgres in Docker Compose; required in production) |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_STATEMENT_TIMEOUT_MS` | Postgres connection pool (5, 10) and query timeout (30000 ms) |
 {% endif %}
 
 Copy `.env.example` to `.env` for local development.

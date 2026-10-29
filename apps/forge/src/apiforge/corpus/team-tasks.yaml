@@ -1,0 +1,256 @@
+openapi: 3.0.3
+info:
+  title: Team Tasks
+  version: 1.0.0
+  description: |
+    A task tracker whose spec leans on the parts of OpenAPI that are easy to get wrong in
+    generated code: a security requirement that needs two credentials at once, alternatives
+    with and without scopes, a scheme APIForge cannot check (HTTP digest, refused with 401),
+    server managed read-only fields that a replace must keep, paging parameters without
+    defaults, integer enums in the query string and an operation documented only by its
+    default response.
+tags:
+  - name: tasks
+  - name: reports
+paths:
+  /tasks:
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      summary: List tasks (an API key and a bearer token, both required)
+      security:
+        - apiKey: []
+          bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: level
+          in: query
+          description: Only tasks at this level
+          schema:
+            type: integer
+            enum: [1, 2, 3]
+      responses:
+        '200':
+          description: Tasks, sorted by id
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+    post:
+      tags: [tasks]
+      operationId: createTask
+      summary: Add a task (an API key and a bearer token, both required)
+      security:
+        - apiKey: []
+          bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+      responses:
+        '201':
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+  /tasks/{taskId}:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [tasks]
+      operationId: getTask
+      summary: Read a task
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          description: No such task
+    put:
+      tags: [tasks]
+      operationId: replaceTask
+      summary: Replace a task (an admin token, or an API key)
+      security:
+        - oauth2: [tasks:admin]
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+      responses:
+        '200':
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          description: No such task
+    patch:
+      tags: [tasks]
+      operationId: updateTask
+      summary: Change some fields of a task
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskPatch'
+      responses:
+        '200':
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          description: No such task
+    delete:
+      tags: [tasks]
+      operationId: deleteTask
+      summary: Delete a task (HTTP basic only)
+      security:
+        - basicAuth: []
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          description: No such task
+  /tasks/{taskId}/audit:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      tags: [tasks]
+      operationId: getTaskAudit
+      summary: Who changed a task (HTTP digest, which APIForge cannot check)
+      security:
+        - digestAuth: []
+      responses:
+        '200':
+          description: Changes, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+  /summary:
+    get:
+      tags: [reports]
+      operationId: getSummary
+      summary: Counts per level (documented only by its default response)
+      parameters:
+        - name: group
+          in: query
+          description: One level, or all of them
+          schema:
+            enum: [1, 2, 3, all]
+            default: all
+      responses:
+        default:
+          description: The counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total]
+                properties:
+                  total:
+                    type: integer
+                  group:
+                    type: string
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    basicAuth:
+      type: http
+      scheme: basic
+    digestAuth:
+      type: http
+      scheme: digest
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://tasks.example.com/oauth/token
+          scopes:
+            tasks:admin: Manage every task
+  schemas:
+    Task:
+      type: object
+      required: [id, title, level]
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        level:
+          type: integer
+          minimum: 1
+          maximum: 3
+        done:
+          type: boolean
+          default: false
+        ownerId:
+          type: string
+          readOnly: true
+          description: Set by the server; a replace keeps it
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+    TaskPatch:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 200
+        level:
+          type: integer
+          minimum: 1
+          maximum: 3
+        done:
+          type: boolean

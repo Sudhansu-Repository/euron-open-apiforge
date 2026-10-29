@@ -1,4 +1,8 @@
-"""Alembic environment: migrations run against DATABASE_URL with the generated tables."""
+"""Alembic environment: migrations run against DATABASE_URL with the generated tables.
+
+Only the database settings are read, so running the migrations does not need the app's
+secrets (JWT_SECRET, API keys) in the environment.
+"""
 
 from __future__ import annotations
 
@@ -9,13 +13,14 @@ from alembic import context
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.config import get_settings
+from app.config import DatabaseSettings
 from app.generated.db_models import Base
 
 if context.config.config_file_name is not None:
     fileConfig(context.config.config_file_name)
 
 target_metadata = Base.metadata
+database_url = DatabaseSettings().database_url
 
 
 def _run(connection: Connection) -> None:
@@ -25,14 +30,14 @@ def _run(connection: Connection) -> None:
 
 
 async def _online() -> None:
-    engine = create_async_engine(get_settings().database_url)
+    engine = create_async_engine(database_url)
     async with engine.connect() as connection:
         await connection.run_sync(_run)
     await engine.dispose()
 
 
 if context.is_offline_mode():
-    context.configure(url=get_settings().database_url, target_metadata=target_metadata, literal_binds=True)
+    context.configure(url=database_url, target_metadata=target_metadata, literal_binds=True)
     with context.begin_transaction():
         context.run_migrations()
 else:

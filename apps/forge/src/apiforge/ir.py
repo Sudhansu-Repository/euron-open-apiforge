@@ -109,7 +109,7 @@ class ResponseDef:
 
 @dataclass
 class SecurityUse:
-    scheme: str  # wire name in components.securitySchemes
+    scheme: str  # wire name in components.securitySchemes (may be one APIForge cannot check)
     scopes: list[str] = field(default_factory=list)
 
 
@@ -153,7 +153,9 @@ class OperationDef:
     params: list[ParamDef]
     body: BodyDef | None
     responses: list[ResponseDef]
-    security: list[list[SecurityUse]] | None  # None: no requirement; []: explicitly open
+    # Alternatives (any one accepts), each a list of schemes that are all required.
+    # None: no requirement; []: explicitly open.
+    security: list[list[SecurityUse]] | None
     pointer: str
     crud: CrudInfo | None = None
     # Differences from the spec APIForge reported and accepted, as fidelity message parts.
@@ -166,6 +168,11 @@ class OperationDef:
                 return r
         for r in self.responses:
             if r.status == "2XX":
+                return r
+        # With no 2xx documented, ``default`` describes every other status, success too:
+        # the route answers 200 with that body.
+        for r in self.responses:
+            if r.status == "default":
                 return r
         return None
 

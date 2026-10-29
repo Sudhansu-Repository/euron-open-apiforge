@@ -9,12 +9,29 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import get_settings
+from app.config import DatabaseSettings, get_settings
 
-engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
+
+def engine_options(settings: DatabaseSettings) -> dict[str, Any]:
+    """Pool and timeout settings for a server database (SQLite has no use for them)."""
+    options: dict[str, Any] = {"pool_pre_ping": True}
+    if settings.database_url.startswith("sqlite"):
+        return options
+    options.update(pool_size=settings.db_pool_size, max_overflow=settings.db_max_overflow)
+    if settings.database_url.startswith("postgresql+asyncpg") and settings.db_statement_timeout_ms:
+        # A query running longer than this is cancelled by Postgres instead of holding a
+        # connection forever.
+        timeout = str(settings.db_statement_timeout_ms)
+        options["connect_args"] = {"server_settings": {"statement_timeout": timeout}}
+    return options
+
+
+_settings = get_settings()
+engine = create_async_engine(_settings.database_url, **engine_options(_settings))
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

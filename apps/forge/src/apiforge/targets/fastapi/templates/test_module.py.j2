@@ -15,7 +15,7 @@ from tests.generated.conftest import with_credentials
 {% endfor %}
 {% macro request_args(v, t, creds=True) -%}
 **with_credentials(
-        {{ (v.op.security[0][0].scheme if (creds and v.security_args) else None)|lit }},
+        {{ (v.test_schemes if creds else [])|lit }},
         {{ v.scopes|lit }},
 {% if t.query %}        params={{ t.query }},
 {% endif %}
@@ -43,7 +43,11 @@ async def test_{{ t.name }}_matches_the_spec(client: httpx.AsyncClient) -> None:
         {{ t.url|lit }},
         {{ request_args(v, t) }},
     )
-{% if t.statuses %}
+{% if t.refused %}
+    # The spec requires a security scheme APIForge cannot check: the route refuses every
+    # request until you override security.unsupported with your own check (app/main.py).
+    assert resp.status_code == 401, resp.text
+{% elif t.statuses %}
     assert resp.status_code in {{ t.statuses }}, resp.text
 {% endif %}
 {% if t.check_type %}

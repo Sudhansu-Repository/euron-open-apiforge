@@ -11,6 +11,7 @@ out blocks. Two kinds of files come out:
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass, field
@@ -47,6 +48,15 @@ ROUTABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 HANDLER_PREFIX = "app/handlers/"
 PAGE_NAMES = {"limit", "offset", "page", "page_size", "per_page", "size"}
+# The WWW-Authenticate challenge a 401 names for each kind of scheme.
+CHALLENGES = {
+    "bearer": "Bearer",
+    "oauth2": "Bearer",
+    "openid": "Bearer",
+    "basic": "Basic",
+    "apikey": "APIKey",
+}
+AUTH_HEADER = {"bearer", "basic", "oauth2", "openid"}  # kinds read from Authorization
 
 
 def tokens(*exprs: str) -> set[str]:
@@ -54,6 +64,26 @@ def tokens(*exprs: str) -> set[str]:
     for e in exprs:
         out |= set(_TOKEN.findall(_STRING.sub("''", e)))
     return out
+
+
+_LITERAL = re.compile(r"Literal\[((?:[^\[\]'\"]|'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")*)\]")
+
+
+def wire_literals(expr: str) -> str:
+    """``Literal[1, 2]`` -> ``Annotated[Literal[1, 2], wire_literal(1, 2)]`` for parameters.
+
+    Parameter values arrive as text, and Pydantic never matches the text "2" to the member
+    2; ``wire_literal`` (app/generated/wire.py) converts it first. String-only literals are
+    left alone.
+    """
+
+    def wrap(m: re.Match[str]) -> str:
+        members = ast.literal_eval(f"({m.group(1)},)")
+        if all(isinstance(v, str) for v in members):
+            return m.group(0)
+        return f"Annotated[{m.group(0)}, wire_literal({m.group(1)})]"
+
+    return _LITERAL.sub(wrap, expr)
 
 
 def import_lines(names: set[str], models: set[str]) -> list[str]:
@@ -64,6 +94,8 @@ def import_lines(names: set[str], models: set[str]) -> list[str]:
     lines = [f"from {m} import {', '.join(sorted(ns))}" for m, ns in sorted(by_module.items())]
     if "re" in names:
         lines.insert(0, "import re")
+    if "wire_literal" in names:
+        lines.append("from app.generated.wire import wire_literal")
     used_models = sorted(names & models)
     if used_models:
         lines.append(f"from app.generated.models import {', '.join(used_models)}")
@@ -93,6 +125,10 @@ class OpView:
     media_type: str | None = None
     security_args: list[str] = field(default_factory=list)
     scopes: list[str] = field(default_factory=list)
+    principal_expr: str = "principal"  # what the route passes the handler as principal
+    require: str | None = None  # the security.require(...) call, when the route has one
+    test_schemes: list[str] = field(default_factory=list)  # one alternative, for the tests
+    auth_label: str = "none"  # for the README
     mock_body: str = "None"
     mock_type: str = "None"
     doc: str = ""
@@ -159,7 +195,7 @@ class FastApiTarget:
                 kw["description"] = py_literal(p.description)
             if p.deprecated:
                 kw["deprecated"] = "True"
-            ann = f"Annotated[{self._param_type(p)}, {marker}({kwargs(kw)})]"
+            ann = f"Annotated[{wire_literals(self._param_type(p))}, {marker}({kwargs(kw)})]"
             h_type = qualify(self._param_type(p), self.model_names)
             if p.required:
                 required.append(f"{p.name}: {ann}")
@@ -212,25 +248,9 @@ class FastApiTarget:
                 )
 
         if op.security:
-            for alt in op.security:
-                use = alt[0]
-                scheme = self._scheme(use.scheme)
-                if scheme is None:
-                    continue
-                arg = names.take(f"auth_{scheme.name}")
-                dep = f"security.{scheme.name}"
-                if scheme.kind in ("oauth2", "openid") and use.scopes:
-                    v.scopes = sorted(set(v.scopes) | set(use.scopes))
-                    scopes = py_literal(use.scopes)
-                    required.append(
-                        f"{arg}: Annotated[Principal | None, Security({dep}, scopes={scopes})]"
-                    )
-                else:
-                    required.append(f"{arg}: Annotated[Principal | None, Security({dep})]")
-                v.security_args.append(arg)
-            if v.security_args:
-                h_required.append("principal: Principal")
-                v.call_args.append("principal=principal")
+            self._security(op, v, names, required)
+            h_required.append("principal: Principal")
+            v.call_args.append(f"principal={v.principal_expr}")
 
         v.router_params = required + optional
         v.handler_params = h_required + h_optional
@@ -273,6 +293,14 @@ class FastApiTarget:
                 v.result_mode = "empty"
                 v.return_expr = "Response"
                 v.handler_return = "None"
+            if success.status == "default":
+                # Keep the spec's default in the served document; FastAPI adds the 200.
+                entry = [f'"description": {py_literal(success.description or "default")}']
+                if success.type is not None and success.is_json:
+                    entry.insert(0, f'"model": {success.type.expr}')
+                elif success.media_type is not None:
+                    entry.append(self._content_entry(success))
+                responses["default"] = entry
             if success.raw.get("headers"):
                 responses.setdefault(str(v.status_code), []).append(
                     f'"headers": {py_literal(self._clean_headers(success.raw["headers"]))}'
@@ -310,6 +338,60 @@ class FastApiTarget:
         v.test = self._test_case(op, v)
         return v
 
+    def _security(self, op: OperationDef, v: OpView, names: Namer, required: list[str]) -> None:
+        """Route arguments and the ``security.require`` call for the operation's requirement.
+
+        Alternatives are OR, the schemes inside one are AND. One argument per scheme and
+        scope set, shared between alternatives; ``require`` decides, so a missing scope on
+        one alternative does not refuse a request another alternative accepts. An
+        alternative that needs a scheme APIForge cannot check never accepts; when no
+        alternative is left, the route always answers 401.
+        """
+        assert op.security
+        usable = [alt for alt in op.security if all(self._scheme(u.scheme) for u in alt)]
+        if not usable:
+            arg = names.take("auth_unsupported")
+            required.append(f"{arg}: Annotated[Principal, Depends(security.unsupported)]")
+            v.principal_expr = arg
+            v.auth_label = "refused (unsupported scheme)"
+            return
+        args: dict[tuple[str, tuple[str, ...]], str] = {}
+        groups: list[str] = []
+        challenges: list[str] = []
+        for alt in usable:
+            items: list[str] = []
+            for use in alt:
+                scheme = self._scheme(use.scheme)
+                assert scheme is not None
+                scopes = sorted(set(use.scopes)) if scheme.kind in ("oauth2", "openid") else []
+                key = (scheme.name, tuple(scopes))
+                if key not in args:
+                    arg = names.take(f"auth_{scheme.name}")
+                    args[key] = arg
+                    dep = f"security.{scheme.name}"
+                    extra = f", scopes={py_literal(scopes)}" if scopes else ""
+                    required.append(f"{arg}: Annotated[Principal | None, Security({dep}{extra})]")
+                    v.security_args.append(arg)
+                items.append(f"({args[key]}, {py_literal(scopes)})")
+                v.scopes = sorted(set(v.scopes) | set(scopes))
+                challenge = CHALLENGES[scheme.kind]
+                if challenge not in challenges:
+                    challenges.append(challenge)
+            groups.append("[" + ", ".join(items) + "]")
+        v.principal_expr = "principal"
+        v.require = (
+            f"security.require({', '.join(groups)}, challenge={py_literal(', '.join(challenges))})"
+        )
+        # The generated tests send the credentials of one alternative: the first that does
+        # not need the Authorization header twice (bearer and basic together, say).
+        kind = {s.wire: s.kind for s in self.api.schemes}
+        pick = next(
+            (alt for alt in usable if sum(kind[u.scheme] in AUTH_HEADER for u in alt) <= 1),
+            usable[0],
+        )
+        v.test_schemes = [u.scheme for u in pick]
+        v.auth_label = " or ".join(" + ".join(u.scheme for u in alt) for alt in usable)
+
     def _crud_body(self, op: OperationDef, v: OpView) -> list[str]:
         c = op.crud
         assert c is not None
@@ -327,10 +409,10 @@ class FastApiTarget:
             if "offset" in names:
                 args.append("offset=offset")
             size = next((n for n in ("page_size", "per_page", "size") if n in names), None)
-            if "page" in names and size:
-                args.append(f"offset=(page - 1) * {size}")
-                if "limit" not in names:
-                    args.append(f"limit={size}")
+            if "page" in names:
+                args.append("page=page")
+            if size:
+                args.append(f"page_size={size}")
             # A query parameter filters the column of the field with the same name on the
             # wire (``status`` filters ``status`` even though the argument is ``status_``).
             # JSON columns cannot be compared portably, so they are not offered as filters.
@@ -485,7 +567,8 @@ class FastApiTarget:
             "data": None,
             "files": None,
             "content": None,
-            "secured": bool(v.security_args),
+            "secured": bool(op.security),
+            "refused": bool(op.security) and v.require is None,
             "statuses": self._statuses(op),
             "check_type": None,
             "invalid": None,
@@ -519,7 +602,8 @@ class FastApiTarget:
         success = op.success
         if success is not None and success.type is not None and success.is_json:
             case["check_type"] = success.type.expr
-        case["invalid"] = self._invalid_case(op, case)
+        # A refused route answers 401 before it validates anything.
+        case["invalid"] = None if case["refused"] else self._invalid_case(op, case)
         return case
 
     def _statuses(self, op: OperationDef) -> str | None:
@@ -637,6 +721,8 @@ class FastApiTarget:
         gen("app/generated/errors.py", "errors.py.j2")
         gen("app/generated/principal.py", "principal.py.j2")
         gen("app/generated/security.py", "security.py.j2")
+        gen("app/generated/middleware.py", "middleware.py.j2")
+        gen("app/generated/wire.py", "wire.py.j2")
         mock_exprs = [v.mock_type for v in self.views] + [
             t for v in self.views for _, t, _ in v.error_mocks
         ]
@@ -660,6 +746,7 @@ class FastApiTarget:
                     "Header",
                     "Path",
                     "Query",
+                    "Depends",
                     "Request",
                     "Response",
                     "Security",
@@ -706,7 +793,8 @@ class FastApiTarget:
             gen("app/generated/db_models.py", "db_models.py.j2")
             gen("app/generated/crud.py", "crud.py.j2")
             for res in self.resources:
-                if {"create", "read"} <= set(res.ops):
+                refused = any(o.test["refused"] for o in res.ops.values())
+                if {"create", "read"} <= set(res.ops) and not refused:
                     gen(f"tests/generated/test_crud_{res.name}.py", "test_crud.py.j2", res=res)
             gen("app/db.py", "db.py.j2", owner="user")
             gen("alembic.ini", "alembic.ini.j2", owner="user")

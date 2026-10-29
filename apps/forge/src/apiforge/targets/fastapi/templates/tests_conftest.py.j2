@@ -41,13 +41,13 @@ def bearer_token(scopes: list[str] | None = None) -> str:
 {% endif %}
 
 
-def with_credentials(scheme: str | None, scopes: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
-    """Request arguments with a valid credential for ``scheme`` added."""
+def with_credentials(schemes: list[str], scopes: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Request arguments with a valid credential for each of ``schemes`` added."""
     headers: dict[str, str] = dict(kwargs.pop("headers", None) or {})
     params: dict[str, Any] = dict(kwargs.pop("params", None) or {})
     cookies: dict[str, str] = dict(kwargs.pop("cookies", None) or {})
 {% for s in schemes %}
-    if scheme == {{ s.wire|lit }}:
+    if {{ s.wire|lit }} in schemes:
 {% if s.kind in ("bearer", "oauth2", "openid") %}
         headers["Authorization"] = f"Bearer {bearer_token(scopes)}"
 {% elif s.kind == "basic" %}

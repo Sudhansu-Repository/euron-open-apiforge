@@ -9,7 +9,7 @@ import httpx
 
 from tests.generated.conftest import with_credentials
 {% macro creds(v) -%}
-**with_credentials({{ (v.op.security[0][0].scheme if v.security_args else None)|lit }}, {{ v.scopes|lit }}{% for k, val in kwargs.items() %}, {{ k }}={{ val }}{% endfor %})
+**with_credentials({{ v.test_schemes|lit }}, {{ v.scopes|lit }}{% for k, val in kwargs.items() %}, {{ k }}={{ val }}{% endfor %})
 {%- endmacro %}
 {% set create = res.ops["create"] %}
 {% set read = res.ops["read"] %}

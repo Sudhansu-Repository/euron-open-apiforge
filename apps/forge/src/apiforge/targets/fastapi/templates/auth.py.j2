@@ -26,21 +26,27 @@ from app.generated.principal import Principal
 
 
 def _verify_jwt(token: str, scheme: str) -> Principal | None:
+    """A JSON Web Token signed with JWT_SECRET. OpenID Connect and OAuth2 tokens are checked
+    the same way: with the configured secret, not keys fetched from the provider (JWKS)."""
     settings = get_settings()
     secret = settings.jwt_secret.get_secret_value()
     if not secret:
         return None  # fail closed: no secret configured, no token is valid
+    required = ["exp", "sub"] + (["iss"] if settings.jwt_issuer else [])
     try:
         claims: dict[str, Any] = jwt.decode(
             token,
             secret,
             algorithms=[settings.jwt_algorithm],
             audience=settings.jwt_audience,
-            options={"require": ["exp", "sub"]},
+            issuer=settings.jwt_issuer,
+            leeway=settings.jwt_leeway_seconds,
+            options={"require": required},
         )
     except jwt.PyJWTError:
         return None
-    raw = claims.get("scope") or claims.get("scopes") or []
+    # Scopes: "scope" (OAuth2, space separated) or "scp" (a list or a string), or "scopes".
+    raw = claims.get("scope") or claims.get("scp") or claims.get("scopes") or []
     scopes = raw.split() if isinstance(raw, str) else [str(s) for s in raw]
     return Principal(subject=str(claims["sub"]), scheme=scheme, scopes=scopes, claims=claims)
 {% endif %}
