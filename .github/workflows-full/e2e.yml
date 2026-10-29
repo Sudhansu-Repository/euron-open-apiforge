@@ -17,12 +17,12 @@ jobs:
       # The same files `make up` uses, for the steps that read logs without following them.
       COMPOSE: docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yaml -f deploy/compose/compose.floci.yaml
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - uses: pnpm/action-setup@v6
         with:
           package_json_file: e2e/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
       - name: Start the stack (Terraform applies local-floci inside compose)
